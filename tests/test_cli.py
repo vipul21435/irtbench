@@ -294,3 +294,16 @@ def test_no_prior_flag_reaches_the_fit(long_csv, tmp_path, capsys):
     assert main(["fit", str(long_csv), "--json", str(out)]) == 0
     assert json.loads(out.read_text())["fit"]["slope_prior_sd"] == 0.5
     assert "slope prior sd 0.5 around a common slope of" in capsys.readouterr().out
+
+
+def test_items_can_add_standard_errors(benchmark_csv, tmp_path, capsys):
+    out = tmp_path / "items.json"
+    assert main(["items", str(benchmark_csv), "--se", "information", "--json", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "## Lowest discriminations with information standard errors" in text
+    rows = json.loads(out.read_text())["items"]
+    assert rows[0]["discrimination_se"] > 0
+    assert rows[30]["discrimination_se"] is None
+    code = main(["items", str(benchmark_csv), "--se", "bootstrap", "--boot", "5", "--rows", "3"])
+    assert code == 0
+    assert "## Lowest discriminations with bootstrap standard errors" in capsys.readouterr().out

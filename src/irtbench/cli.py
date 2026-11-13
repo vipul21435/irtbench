@@ -31,6 +31,7 @@ from irtbench.mml import (
     estimate_abilities,
     fit_mml,
 )
+from irtbench.se import bootstrap_standard_errors, standard_errors
 from irtbench.subset import METHODS, evaluate_subsets, predict_scores, select_items
 
 
@@ -258,6 +259,44 @@ def _cmd_items(args: argparse.Namespace) -> int:
     report = diagnose_items(data, fit, rasch=rasch)
     lines = [f"# irtbench items: {Path(args.input).name}", "", *_fit_lines(data, fit)]
     lines += _item_lines(report, args.rows)
+    rows = report.to_dict()
+    if args.se != "none":
+        if args.se == "information":
+            errors = standard_errors(fit, data)
+        else:
+            errors = bootstrap_standard_errors(
+                data,
+                fit.kind,
+                n_boot=args.boot,
+                seed=args.seed,
+                slope_prior_sd=fit.slope_prior_sd,
+                n_quad=args.quad,
+                resolution=args.resolution,
+                max_iter=args.max_iter,
+                tol=args.tol,
+            )
+        for index, row in enumerate(rows):
+            for name, values in (
+                ("discrimination_se", errors.discrimination),
+                ("difficulty_se", errors.difficulty),
+            ):
+                row[name] = float(values[index]) if np.isfinite(values[index]) else None
+        order = np.argsort(np.where(np.isfinite(fit.discrimination), fit.discrimination, np.inf))
+        count = _shown(int(fit.estimated.sum()), args.rows)
+        lines += ["", f"## Lowest discriminations with {args.se} standard errors", ""]
+        lines += _table(
+            ["item", "discrimination", "se", "difficulty", "se"],
+            [
+                [
+                    data.items[j],
+                    _number(fit.discrimination[j]),
+                    _number(errors.discrimination[j]),
+                    _number(fit.difficulty[j]),
+                    _number(errors.difficulty[j]),
+                ]
+                for j in order[:count]
+            ],
+        )
     sys.stdout.write("\n".join(lines) + "\n")
     _write_json(
         args.json,
@@ -265,7 +304,7 @@ def _cmd_items(args: argparse.Namespace) -> int:
             "irtbench": __version__,
             "data": _data_json(data),
             "fit": fit.to_dict(),
-            "items": report.to_dict(),
+            "items": rows,
         },
     )
     return 0
@@ -488,6 +527,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Flag items solved by all or by none and items that weaker models solve "
         "more often than stronger ones.",
     )
+    items.add_argument(
+        "--se",
+        choices=("none", "information", "bootstrap"),
+        default="none",
+        help="standard errors: observed information, or bootstrap over models (default: none)",
+    )
+    items.add_argument("--boot", type=int, default=200, help="bootstrap replicates")
+    items.add_argument("--seed", type=int, default=0)
     items.set_defaults(handler=_cmd_items)
 
     subset = commands.add_parser(
