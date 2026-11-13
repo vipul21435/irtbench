@@ -409,9 +409,11 @@ plain mean on 100 (3.0 against 3.2).
 - The observed-information standard errors hold the common slope of the prior fixed, and the
   bootstrap resamples models only; neither reflects uncertainty about which items are in the
   benchmark.
-- The comparison against an independent implementation is a direct maximisation of the same
-  marginal likelihood with scipy's optimiser and quadrature, written in the tests. No
-  third-party IRT package was installed and compared.
+- No third-party IRT package was compared against. The tests install none, so agreement with
+  other IRT software (py-irt, mirt) on the same data is unchecked. The independent reference
+  in the tests is a direct maximisation of the same marginal likelihood with scipy's optimiser
+  on scipy's Gauss-Hermite nodes; it checks the EM and the grid, and shares the definition of
+  the model with the package.
 - Missing cells are assumed missing at random. The largest matrix fitted so far is 175 by 500;
   larger ones were not timed.
 - The fetch script depends on the layout of the upstream repository at the commit above, and
