@@ -218,14 +218,17 @@ reported next to a baseline that predicts each item's solve rate and ignores the
 **Subsets.** `information` visits nine abilities spread over the fitted models (their 10 % to
 90 % quantiles) in turn and takes the unused item with the most information at each;
 `cluster` runs k-means on the items' fitted curves at those abilities and takes the item
-nearest each centre; `random` draws items uniformly. The full score of a new model is then
-estimated in the spirit of the IRT estimator of tinyBenchmarks (Polo et al. 2024,
-[arXiv:2402.14992](https://arxiv.org/abs/2402.14992)): its answers on the subset count as they
-are, and every other item counts with the probability the fit gives it. Here that probability
-is averaged over the model's ability posterior instead of being evaluated at a point estimate.
+nearest each centre; `random` draws items uniformly. All three choose among the items the fit
+estimated. The full score of a new model is then estimated in the spirit of the IRT estimator
+of tinyBenchmarks (Polo et al. 2024, [arXiv:2402.14992](https://arxiv.org/abs/2402.14992)):
+its answers on the subset count as they are, and every other item counts with the probability
+the fit gives it. Here that probability is averaged over the model's ability posterior instead
+of being evaluated at a point estimate.
 The evaluation holds out models, not cells: the IRT model is fitted on the training models
 only, items are chosen from that fit only, and the error is measured on models the fit never
-saw.
+saw. Its baseline without a model, the plain mean of the answers on a random subset, draws
+from every item of the benchmark, including those solved by all or by none, because the true
+score counts them too.
 
 **Joint maximum likelihood** (`fit_jml`) estimates one ability per model together with the item
 parameters, with a ridge penalty that keeps perfect and zero scores finite. It is there for
@@ -263,7 +266,7 @@ python scripts/fetch_swebench_verified.py data
 python examples/swebench_verified_study.py data/swebench_verified.csv --json study.json --plots docs
 ```
 
-The study took 112 seconds here. All numbers below are from that run.
+The study took 22 seconds here. All numbers below are from that run.
 
 **Items that carry no information.** No instance is solved by every submission. 26 of the 500
 are solved by none.
@@ -324,29 +327,29 @@ Joint and marginal 1PL fits agree: their abilities correlate at 0.99995 and thei
 **Predicting the score of unseen submissions from a few items.** 20 random splits into 130
 submissions to fit on and 44 to predict; mean absolute error of the predicted full score, in
 percentage points, with the standard deviation over splits in brackets. For `random` the error
-is averaged over 10 subsets per split.
+is averaged over 10 subsets per split. The last column uses no model: it is the plain mean of
+the answers on 10 random subsets per split, drawn from all 500 items.
 
 | items | information | cluster | random | random, plain mean |
 |---:|---:|---:|---:|---:|
-| 25 | 4.05 (0.42) | 4.19 (0.46) | 4.22 (0.21) | 7.89 (0.99) |
-| 50 | 3.14 (0.47) | 2.84 (0.39) | 2.95 (0.12) | 5.74 (0.70) |
-| 100 | 2.57 (0.43) | 1.99 (0.27) | 2.06 (0.09) | 4.62 (0.65) |
+| 25 | 4.05 (0.42) | 4.19 (0.46) | 4.22 (0.21) | 7.19 (0.76) |
+| 50 | 3.14 (0.47) | 2.84 (0.39) | 2.95 (0.12) | 4.79 (0.36) |
+| 100 | 2.57 (0.43) | 1.99 (0.27) | 2.06 (0.09) | 3.24 (0.34) |
 
 ![Error of the predicted score against the number of items](docs/subsets.png)
 
-What this shows: on a random subset, the IRT estimator has about half the error of the plain
-mean of the answers (4.2 against 7.9 points at 25 items). Choosing the items did not help
-beyond that. Clustering is within noise of random subsets at every size, and the
-information-based choice is about the same at 25 items and worse at 100. So for this
-benchmark the gain comes from the estimator, not from the selection, and 25 items leave an
-error of about 4 points.
+What this shows: on a random subset, the IRT estimator has about 60 % of the error of the
+plain mean of the answers on a random subset of the same size (4.2 against 7.2 points at 25
+items, 3.0 against 4.8 at 50, 2.1 against 3.2 at 100). Choosing the items did not help beyond
+that. Clustering is within noise of random subsets at every size, and the information-based
+choice is about the same at 25 items and worse at 100. So for this benchmark the gain comes
+from the estimator, not from the selection, and 25 items leave an error of about 4 points.
 
-A caveat on the first comparison: the plain-mean baseline in this table draws its random items
-only among the items the fit could estimate, which leaves out the 26 items that no submission
-solves, while the true score counts all 500. That makes the plain mean run high and overstates
-its error, so "about half" is an upper bound on the gain. The comparison still has to be re-run
-with the baseline drawn from every item; until then read the estimator as clearly better than
-the plain mean, by a margin smaller than the table shows.
+The plain mean is drawn from all 500 items, including the 26 that no submission solves, so it
+is an unbiased estimate of the score and its error is sampling error only. Against it the
+estimator is worth a little more than twice the items: on 25 random items it does somewhat
+better than the plain mean on 50 (4.2 against 4.8 points), and on 50 somewhat better than the
+plain mean on 100 (3.0 against 3.2).
 
 ## Limitations
 
