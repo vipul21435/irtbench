@@ -90,8 +90,20 @@ def test_subset_evaluation_beats_the_plain_mean_on_simulated_data():
         assert row["information"]["mae"] < row["random_mean"]["mae"]
         assert 0 < row["cluster"]["mae"] < 0.1
     assert result["sizes"]["30"]["random"]["mae"] < result["sizes"]["10"]["random"]["mae"]
-    again = evaluate_subsets(data, sizes=(10, 30), splits=4, random_draws=4, seed=1)
-    assert again == result
+
+
+def test_subset_evaluation_is_seeded():
+    data, _ = simulate_responses(60, 40, kind="2pl", seed=63)
+    options = {"sizes": (8,), "splits": 2, "random_draws": 2}
+    first = evaluate_subsets(data, seed=1, **options)["sizes"]["8"]
+    again = evaluate_subsets(data, seed=1, **options)["sizes"]["8"]
+    other = evaluate_subsets(data, seed=2, **options)["sizes"]["8"]
+    assert set(first) == {"information", "cluster", "random", "random_mean"}
+    for name, row in first.items():
+        assert again[name]["mae"] == pytest.approx(row["mae"], rel=1e-12)
+        assert again[name]["sd"] == pytest.approx(row["sd"], rel=1e-12, abs=1e-15)
+    assert abs(other["random_mean"]["mae"] - first["random_mean"]["mae"]) > 1e-6
+    assert abs(other["random"]["mae"] - first["random"]["mae"]) > 1e-6
 
 
 def test_plain_mean_baseline_draws_from_every_item_of_the_benchmark():

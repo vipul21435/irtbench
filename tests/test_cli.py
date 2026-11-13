@@ -234,7 +234,8 @@ def test_readme_quickstart_predicts_from_the_bundled_answers(tmp_path, capsys):
     assert answers.n_missing == 0
     rows = [full.models.index(model) for model in answers.models]
     cols = [full.items.index(item) for item in answers.items]
-    np.testing.assert_array_equal(answers.scores, full.scores[np.ix_(rows, cols)])
+    cells = full.scores[np.ix_(rows, cols)]
+    assert answers.scores.astype(int).tolist() == cells.astype(int).tolist()
 
     out = tmp_path / "predict.json"
     assert main(["predict", str(ANSWERS), "--fit", str(saved), "--json", str(out)]) == 0

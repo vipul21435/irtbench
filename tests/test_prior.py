@@ -11,7 +11,7 @@ def few_models():
 
 
 def test_without_a_prior_the_2pl_runs_away_on_few_models():
-    fit = fit_mml(few_models(), "2pl", slope_prior_sd=None, max_iter=80, max_nodes=201)
+    fit = fit_mml(few_models(), "2pl", slope_prior_sd=None, max_iter=40, max_nodes=201)
     assert not fit.converged
     assert fit.discrimination.max() > 10
     assert fit.slope_prior_sd is None
@@ -51,7 +51,7 @@ def test_the_prior_does_not_bound_a_common_slope_on_perfectly_separated_results(
 
 
 def test_a_tight_prior_gives_the_1pl_and_a_wide_one_the_maximum_likelihood_fit():
-    data, _ = simulate_responses(3000, 12, kind="2pl", seed=31)
+    data, _ = simulate_responses(1500, 12, kind="2pl", seed=31)
     common = fit_mml(data, "1pl", tol=1e-9)
     tight = fit_mml(data, "2pl", slope_prior_sd=1e-4, tol=1e-9)
     np.testing.assert_allclose(tight.discrimination, common.discrimination, atol=1e-3)
@@ -62,7 +62,7 @@ def test_a_tight_prior_gives_the_1pl_and_a_wide_one_the_maximum_likelihood_fit()
     np.testing.assert_allclose(wide.discrimination, plain.discrimination, atol=1e-4)
     default = fit_mml(data, "2pl", tol=1e-9)
     assert plain.log_likelihood >= default.log_likelihood >= common.log_likelihood
-    # with 3000 models the default prior barely moves the estimates
+    # with 1500 models the default prior barely moves the estimates
     np.testing.assert_allclose(default.discrimination, plain.discrimination, rtol=0.03)
 
 

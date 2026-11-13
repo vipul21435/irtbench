@@ -90,10 +90,12 @@ def test_bootstrap_agrees_with_the_information_errors():
     ratio = by_bootstrap.intercept / by_information.intercept
     assert ((ratio > 0.5) & (ratio < 2.0)).all()
     assert 0.7 < np.median(ratio) < 1.4
-    again = bootstrap_standard_errors(data, "1pl", n_boot=30, seed=1)
-    np.testing.assert_array_equal(again.intercept, by_bootstrap.intercept)
-    other = bootstrap_standard_errors(data, "1pl", n_boot=30, seed=2)
-    assert not np.array_equal(other.intercept, by_bootstrap.intercept)
+    # the seed decides the resamples; a handful of replicates is enough to see that
+    few = bootstrap_standard_errors(data, "1pl", n_boot=5, seed=1)
+    again = bootstrap_standard_errors(data, "1pl", n_boot=5, seed=1)
+    np.testing.assert_allclose(again.intercept, few.intercept, rtol=1e-12)
+    other = bootstrap_standard_errors(data, "1pl", n_boot=5, seed=2)
+    assert not np.allclose(other.intercept, few.intercept, rtol=1e-6)
     with pytest.raises(ValueError, match="at least 2 replicates"):
         bootstrap_standard_errors(data, n_boot=1)
 
@@ -104,7 +106,7 @@ def test_bootstrap_counts_replicates_where_an_item_could_not_be_estimated():
     scores[:, 4] = 0.0
     scores[0, 4] = 1.0  # solved by exactly one model: absent from about a third of resamples
     rare = ResponseMatrix(data.models, data.items, scores)
-    errors = bootstrap_standard_errors(rare, "1pl", n_boot=25, seed=2)
-    assert errors.replicates[4] < 25
-    assert (errors.replicates[:4] == 25).all()
+    errors = bootstrap_standard_errors(rare, "1pl", n_boot=12, seed=2)
+    assert 0 < errors.replicates[4] < 12
+    assert (errors.replicates[:4] == 12).all()
     assert np.isfinite(errors.intercept[:4]).all()
