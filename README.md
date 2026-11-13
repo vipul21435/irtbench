@@ -124,8 +124,8 @@ the ability at which the item is solved half the time. In the 1PL all items shar
 is the Rasch model (Rasch 1960, *Probabilistic Models for Some Intelligence and Attainment
 Tests*; see the [Rasch model](https://en.wikipedia.org/wiki/Rasch_model) article), written with
 abilities of standard deviation `a` so that the 1PL is the 2PL with equal slopes. The 2PL is
-the two-parameter logistic model associated with Allan Birnbaum, whose two chapters are in Lord
-and Novick's *Statistical Theories of Mental Test Scores* (1968).
+the two-parameter logistic model associated with Allan Birnbaum, whose account of it is in
+Lord and Novick's *Statistical Theories of Mental Test Scores* (1968).
 
 **Marginal maximum likelihood.** The abilities are integrated out and the item parameters
 maximise the marginal likelihood by EM, as in Bock and Aitkin (1981,
