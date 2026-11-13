@@ -8,10 +8,11 @@ import pytest
 
 from irtbench import __version__
 from irtbench.cli import main
-from irtbench.data import ResponseMatrix, write_long
+from irtbench.data import ResponseMatrix, read_matrix, write_long
 from irtbench.simulate import simulate_responses
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "toy_results.csv"
+ANSWERS = EXAMPLE.with_name("answers.csv")
 
 
 @pytest.fixture
@@ -218,6 +219,38 @@ def test_subset_methods_and_errors(benchmark_csv, tmp_path, capsys):
     assert len(capsys.readouterr().out.split()) == 5
     assert main(["subset", str(benchmark_csv), "-k", "500"]) == 2
     assert "k must be between 1 and 30" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(not ANSWERS.exists(), reason="examples are not shipped with this install")
+def test_readme_quickstart_predicts_from_the_bundled_answers(tmp_path, capsys):
+    saved = tmp_path / "subset.json"
+    assert main(["subset", str(EXAMPLE), "-k", "6", "--json", str(saved)]) == 0
+    chosen = capsys.readouterr().out.split()
+    assert len(chosen) == 6
+    # answers.csv holds the cells of three models on exactly the six chosen items
+    answers, full = read_matrix(ANSWERS), read_matrix(EXAMPLE)
+    assert answers.models == ("model-01", "model-02", "model-03")
+    assert sorted(answers.items) == sorted(chosen)
+    assert answers.n_missing == 0
+    rows = [full.models.index(model) for model in answers.models]
+    cols = [full.items.index(item) for item in answers.items]
+    np.testing.assert_array_equal(answers.scores, full.scores[np.ix_(rows, cols)])
+
+    out = tmp_path / "predict.json"
+    assert main(["predict", str(ANSWERS), "--fit", str(saved), "--json", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert text.startswith("# irtbench predict: answers.csv\n")
+    assert "- fit: 2pl on 24 items; answers given on 6 of them" in text
+    # the table printed in the README, to the three decimals it shows
+    predicted = {}
+    for line in text.splitlines():
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if cells[0].startswith("model-"):
+            predicted[cells[0]] = float(cells[-1])
+    assert list(predicted) == ["model-02", "model-01", "model-03"]
+    expected = {"model-02": 0.461, "model-01": 0.289, "model-03": 0.279}
+    for model, value in expected.items():
+        assert predicted[model] == pytest.approx(value, abs=2e-3)
 
 
 def test_predict_rejects_a_file_that_is_not_a_fit(benchmark_csv, tmp_path, capsys):

@@ -78,9 +78,10 @@ $ irtbench items examples/toy_results.csv --rows 3
 ```
 
 `irtbench subset` chooses items and saves the fit; `irtbench predict` then estimates the full
-score of a model from its answers on those items only. Here `answers.csv` holds the answers of
-three of the models on the six chosen items; on all items model-02, model-01 and model-03
-actually score 0.54, 0.27 and 0.13.
+score of a model from its answers on those items only. `examples/answers.csv` holds the
+answers of three of the models on the six chosen items (their 18 rows of
+`examples/toy_results.csv`); on all items model-02, model-01 and model-03 actually score 0.54,
+0.27 and 0.13.
 
 ```
 $ irtbench subset examples/toy_results.csv -k 6 --json subset.json
@@ -90,7 +91,7 @@ item-15
 item-03
 item-05
 item-13
-$ irtbench predict answers.csv --fit subset.json
+$ irtbench predict examples/answers.csv --fit subset.json
 # irtbench predict: answers.csv
 
 - fit: 2pl on 24 items; answers given on 6 of them
