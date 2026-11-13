@@ -341,6 +341,13 @@ information-based choice is about the same at 25 items and worse at 100. So for 
 benchmark the gain comes from the estimator, not from the selection, and 25 items leave an
 error of about 4 points.
 
+A caveat on the first comparison: the plain-mean baseline in this table draws its random items
+only among the items the fit could estimate, which leaves out the 26 items that no submission
+solves, while the true score counts all 500. That makes the plain mean run high and overstates
+its error, so "about half" is an upper bound on the gain. The comparison still has to be re-run
+with the baseline drawn from every item; until then read the estimator as clearly better than
+the plain mean, by a margin smaller than the table shows.
+
 ## Limitations
 
 - One ability per model, binary scores, no guessing parameter. Partial credit, several
