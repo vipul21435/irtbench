@@ -94,6 +94,37 @@ def test_subset_evaluation_beats_the_plain_mean_on_simulated_data():
     assert again == result
 
 
+def test_plain_mean_baseline_draws_from_every_item_of_the_benchmark():
+    # 30 items that separate the models and 90 that nobody solves: the true score counts all
+    # 120, so a plain mean over the 30 fitted items alone would be four times too high
+    live, _ = simulate_responses(80, 30, kind="1pl", seed=65)
+    dead = tuple(f"unsolved-{index:02d}" for index in range(90))
+    data = ResponseMatrix(
+        live.models, live.items + dead, np.hstack([live.scores, np.zeros((80, 90))])
+    )
+    k, n_items = 20, data.n_items
+    result = evaluate_subsets(
+        data, sizes=(k,), methods=("random",), splits=6, random_draws=20, seed=2, kind="1pl"
+    )
+    measured = result["sizes"][str(k)]["random_mean"]["mae"]
+    # closed form for k of the 120 items drawn without replacement: the number of solved
+    # items in the draw is hypergeometric, per model
+    solved = data.scores.sum(axis=1).astype(int)
+    counts = np.arange(k + 1)
+    expected = np.mean(
+        [
+            stats.hypergeom.pmf(counts, n_items, s, k) @ np.abs(counts / k - s / n_items)
+            for s in solved
+        ]
+    )
+    assert measured == pytest.approx(expected, rel=0.15)
+    # the error of the same mean over the fitted items only, which is what a baseline drawn
+    # among the estimated items converges to
+    biased = float(np.abs(live.model_means() - data.model_means()).mean())
+    assert biased > 3 * expected
+    assert measured < 0.5 * biased
+
+
 def test_subset_evaluation_validates():
     data, _ = simulate_responses(20, 8, kind="1pl", seed=64)
     with pytest.raises(ValueError, match="too few models"):

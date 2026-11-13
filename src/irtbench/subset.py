@@ -170,8 +170,12 @@ def evaluate_subsets(
     points between 0 and 1.
 
     For ``random`` the error is averaged over ``random_draws`` subsets per split.
-    ``random_mean`` is the plain mean of the answers on those same random subsets, without any
-    model. The result gives, per size and method, the mean and standard deviation over splits.
+    ``random_mean`` is the baseline without any model: the plain mean of the answers on
+    ``random_draws`` subsets of the same size per split, drawn uniformly from every item of
+    ``data``. That includes the items the fit left out (solved by all or by none of the
+    training models), which the true score counts too; a mean over the estimated items alone
+    would be biased. The result gives, per size and method, the mean and standard deviation
+    over splits.
     """
     for method in methods:
         if method not in METHODS:
@@ -185,6 +189,8 @@ def evaluate_subsets(
     }
     for split in range(splits):
         rng = np.random.default_rng([seed, split])
+        # the baseline has its own stream, so the model-based figures do not depend on it
+        baseline_rng = np.random.default_rng([seed, split, 1])
         order = rng.permutation(data.n_models)
         test, train = data.take_models(order[:n_test]), data.take_models(order[n_test:])
         fit = fit_mml(train, kind, **fit_options)  # type: ignore[arg-type]
@@ -194,16 +200,20 @@ def evaluate_subsets(
         for k in errors:
             for method in methods:
                 draws = random_draws if method == "random" else 1
-                model_based, plain = [], []
+                model_based = []
                 for draw in range(draws):
                     chosen = select_items(
                         fit, k, method, abilities=abilities, seed=int(rng.integers(2**31)) + draw
                     )
                     answers = test.take_items([position[item] for item in chosen])
                     model_based.append(float(np.abs(predict_scores(fit, answers) - truth).mean()))
-                    plain.append(float(np.abs(answers.model_means() - truth).mean()))
                 errors[k][method].append(float(np.mean(model_based)))
                 if method == "random":
+                    plain = []
+                    for _ in range(random_draws):
+                        drawn = baseline_rng.choice(data.n_items, size=k, replace=False)
+                        means = test.take_items(drawn).model_means()
+                        plain.append(float(np.abs(means - truth).mean()))
                     errors[k]["random_mean"].append(float(np.mean(plain)))
     return {
         "splits": splits,
