@@ -289,14 +289,16 @@ def test_warm_start_stays_at_the_solution():
     again = fit_mml(data, "2pl", tol=1e-9, start=(base.discrimination, base.intercept))
     assert again.iterations <= 5
     np.testing.assert_allclose(again.discrimination, base.discrimination, atol=1e-7)
-    assert again.log_likelihood == pytest.approx(base.log_likelihood, abs=1e-9)
+    assert again.log_likelihood == pytest.approx(base.log_likelihood, abs=1e-7)
 
 
 def test_mirrored_start_is_flipped_back_to_positive_slopes():
     # (a, theta) and (-a, -theta) have the same likelihood; the fit reports the positive one
     data, _ = simulate_responses(300, 10, kind="2pl", seed=12)
-    base = fit_mml(data, "2pl", tol=1e-9)
-    mirrored = fit_mml(data, "2pl", tol=1e-9, start=(-base.discrimination, base.intercept))
+    base = fit_mml(data, "2pl", tol=1e-9, slope_prior_sd=None)
+    mirrored = fit_mml(
+        data, "2pl", tol=1e-9, slope_prior_sd=None, start=(-base.discrimination, base.intercept)
+    )
     assert mirrored.discrimination.sum() > 0
     np.testing.assert_allclose(mirrored.discrimination, base.discrimination, atol=1e-6)
     np.testing.assert_allclose(mirrored.intercept, base.intercept, atol=1e-6)

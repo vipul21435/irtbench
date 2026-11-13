@@ -25,6 +25,19 @@ posterior (the curvature of the log-posterior at its mode), and when the rule is
 continues on an equally spaced grid whose step is below the narrowest posterior and below the
 scale ``1 / max|a_j|`` on which the steepest item curve changes.
 
+Slope prior. With few models the likelihood of the 2PL often has no maximum in some slopes: an
+item solved by exactly the strongest models is fitted better and better as its slope grows. The
+2PL is therefore fitted with a normal prior on the ratio of each slope to a common slope ``c``:
+``a_j / c ~ N(1, s^2)``, which adds ``-sum_j (a_j / c - 1)^2 / (2 s^2)`` to the log-likelihood.
+``c`` is not preset; it takes the value that maximises this term, ``sum(a^2) / sum(a)``. The
+penalty therefore depends only on how much the slopes differ from each other relative to their
+size and says nothing about their overall scale, which stays with the likelihood. (A penalty on
+the raw slopes would be cheapened by shrinking all of them and spreading the abilities out to
+compensate.) ``s`` is ``slope_prior_sd``, default 0.5: a slope of zero sits two prior standard
+deviations below the common slope, so a negative slope needs evidence. As ``s`` goes to zero the
+fit becomes the 1PL, and as it grows, the maximum-likelihood 2PL. The result is the mode of the
+posterior of the item parameters (a Bayes modal estimate). ``slope_prior_sd=None`` removes it.
+
 Items whose observed cells are all 1 or all 0 have no finite maximum-likelihood intercept. They
 are flagged and left out of the fit; in the limit they contribute nothing to the likelihood.
 """
@@ -94,6 +107,8 @@ class IRTFit:
     resolution: float = float("nan")
     item_tried: np.ndarray | None = None
     item_solved: np.ndarray | None = None
+    slope_prior_sd: float | None = None
+    slope_prior_mean: float | None = None
 
     def __post_init__(self) -> None:
         for name in ("item_tried", "item_solved"):
@@ -190,6 +205,8 @@ class IRTFit:
             "quadrature": self.quadrature,
             "n_nodes": self.n_nodes,
             "resolution": _finite(self.resolution),
+            "slope_prior_sd": self.slope_prior_sd,
+            "slope_prior_mean": self.slope_prior_mean,
             "log_likelihood": _finite(self.log_likelihood),
             "n_parameters": self.n_parameters,
             "n_models": self.n_models,
@@ -238,6 +255,8 @@ class IRTFit:
                 resolution=_or_nan(payload.get("resolution")),
                 item_tried=np.array([int(row.get("tried", 0)) for row in rows]),
                 item_solved=np.array([int(row.get("solved", 0)) for row in rows]),
+                slope_prior_sd=_or_none(payload.get("slope_prior_sd")),
+                slope_prior_mean=_or_none(payload.get("slope_prior_mean")),
             )
         except (KeyError, TypeError, AttributeError) as error:
             raise ValueError(f"not a fit written by irtbench: {error!r}") from None
@@ -271,6 +290,10 @@ def _finite(value: float) -> float | None:
 
 def _or_nan(value: object) -> float:
     return float("nan") if value is None else float(value)  # type: ignore[arg-type]
+
+
+def _or_none(value: object) -> float | None:
+    return None if value is None else float(value)  # type: ignore[arg-type]
 
 
 def _posterior(
@@ -422,21 +445,32 @@ def _m_step_2pl(
     r: np.ndarray,
     n0: np.ndarray,
     nodes: np.ndarray,
+    precision: float = 0.0,
+    centre: float = 0.0,
     *,
     max_newton: int = 30,
     tol: float = 1e-10,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Maximise each item's expected log-likelihood over its slope and intercept."""
+    """Maximise each item's expected log-likelihood over its slope and intercept.
+
+    With ``precision > 0`` each slope also carries the log-density of a normal prior with that
+    precision and mean ``centre``.
+    """
     n = r + n0
     nodes_sq = nodes * nodes
-    q_now = _expected_loglik(a, d, r, n0, nodes)
+
+    def objective(slope: np.ndarray, intercept: np.ndarray) -> np.ndarray:
+        penalty = 0.5 * precision * (slope - centre) ** 2
+        return _expected_loglik(slope, intercept, r, n0, nodes) - penalty
+
+    q_now = objective(a, d)
     for _ in range(max_newton):
         p = sigmoid(np.outer(a, nodes) + d[:, None])
         residual = r - n * p
         weight = n * p * (1.0 - p)
-        g_a = residual @ nodes
+        g_a = residual @ nodes - precision * (a - centre)
         g_d = residual.sum(axis=1)
-        h_aa = weight @ nodes_sq + _RIDGE
+        h_aa = weight @ nodes_sq + precision + _RIDGE
         h_ad = weight @ nodes
         h_dd = weight.sum(axis=1) + _RIDGE
         det = h_aa * h_dd - h_ad * h_ad
@@ -446,7 +480,7 @@ def _m_step_2pl(
         for _ in range(40):
             a_try = a + scale * step_a
             d_try = d + scale * step_d
-            q_try = _expected_loglik(a_try, d_try, r, n0, nodes)
+            q_try = objective(a_try, d_try)
             worse = ~(q_try >= q_now - 1e-12 * (1.0 + np.abs(q_now)))
             if not worse.any():
                 break
@@ -468,11 +502,15 @@ def _m_step_1pl(
     r: np.ndarray,
     n0: np.ndarray,
     nodes: np.ndarray,
+    precision: float = 0.0,
+    centre: float = 0.0,
     *,
     max_newton: int = 30,
     tol: float = 1e-10,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Maximise the expected log-likelihood over one shared slope and every intercept.
+
+    ``precision`` and ``centre`` are accepted for a common signature; the 1PL has no prior.
 
     The Hessian is an arrow matrix (the slope interacts with every intercept, the intercepts do
     not interact with each other), so the Newton system is solved through its Schur complement.
@@ -530,17 +568,26 @@ def _em(
     kind: str,
     max_iter: int,
     tol: float,
+    prior_sd: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int, bool, list[float]]:
     """Run EM on one grid; returns the parameters, iterations used, convergence and the trace.
+
+    The trace holds the objective before each M-step: the marginal log-likelihood plus, with a
+    slope prior, its log-density (up to a constant).
+
+    With a slope prior the M-step treats the common slope ``c`` as fixed at its current best
+    value, which makes the prior an independent normal on each slope; ``c`` is then updated.
+    Both moves raise the objective.
 
     After each M-step the ability distribution is standardised again: the mean ``m`` and the
     variance ``v`` of the abilities under the current posteriors are what an ability
     distribution ``N(m, v)`` with free parameters would be set to, and moving to
     ``(theta - m) / sqrt(v)`` turns the item parameters into ``a * sqrt(v)`` and ``d + a * m``.
     This expanded step matters on long tests, where the answers pin down ``a * theta`` closely
-    and plain EM, which can only change the scale through the prior, needs hundreds of
-    iterations. On a coarse grid the rescaling is not exact; if it ever lowers the likelihood
-    it is undone and switched off.
+    and plain EM, which can only change the scale through the prior on abilities, needs
+    hundreds of iterations. The slope prior is unchanged by it, because it only sees ratios of
+    slopes. On a coarse grid the rescaling is not exact; if it ever lowers the objective it is
+    undone and switched off.
     """
     m_step = _m_step_1pl if kind == "1pl" else _m_step_2pl
     nodes = grid.nodes
@@ -552,14 +599,18 @@ def _em(
     while steps < max_iter and not converged:
         steps += 1
         posterior, loglik = _posterior(a, d, solved, failed, nodes, grid.log_weights)
-        objective = float(loglik.sum())
+        objective = float(loglik.sum()) + _log_prior(a, prior_sd)
         if expand and plain is not None and objective < trace[-1] - 1e-9 * (1.0 + abs(trace[-1])):
             a, d = plain
             expand = False
             posterior, loglik = _posterior(a, d, solved, failed, nodes, grid.log_weights)
-            objective = float(loglik.sum())
+            objective = float(loglik.sum()) + _log_prior(a, prior_sd)
         trace.append(objective)
-        a_new, d_new = m_step(a, d, solved.T @ posterior, failed.T @ posterior, nodes)
+        centre = _common_slope(a)
+        precision = 0.0 if prior_sd is None or centre == 0.0 else 1.0 / (prior_sd * centre) ** 2
+        a_new, d_new = m_step(
+            a, d, solved.T @ posterior, failed.T @ posterior, nodes, precision, centre
+        )
         if expand:
             plain = (a_new, d_new)
             mass = posterior.sum(axis=0) / posterior.shape[0]
@@ -573,10 +624,85 @@ def _em(
     return a, d, steps, converged, trace
 
 
+def _common_slope(a: np.ndarray) -> float:
+    """The common slope ``c`` that maximises the slope prior: ``sum(a^2) / sum(a)``."""
+    total = float(a.sum())
+    return float(a @ a) / total if abs(total) > 1e-12 else 0.0
+
+
+def _log_prior(a: np.ndarray, prior_sd: float | None) -> float:
+    """Log-density of the slope prior at its best common slope, up to a constant.
+
+    ``-sum((a_j / c - 1)^2) / (2 s^2)`` with ``c = sum(a^2) / sum(a)`` equals
+    ``-(J - sum(a)^2 / sum(a^2)) / (2 s^2)``.
+    """
+    if prior_sd is None:
+        return 0.0
+    squares = float(a @ a)
+    if squares <= 0.0:
+        return 0.0
+    return -0.5 * (a.size - float(a.sum()) ** 2 / squares) / (prior_sd * prior_sd)
+
+
+def _run(
+    a: np.ndarray,
+    d: np.ndarray,
+    solved: np.ndarray,
+    failed: np.ndarray,
+    kind: str,
+    grid: Grid,
+    *,
+    resolution: float | None,
+    max_nodes: int,
+    max_iter: int,
+    tol: float,
+    prior_sd: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, Grid, int, bool, list[float], float]:
+    """EM with the grid checked against the posteriors and rebuilt when it is too coarse.
+
+    Returns the parameters, the grid EM finished on, the iterations used, convergence, the
+    objective trace on that grid and the resolution ratio relative to its target.
+    """
+    budget = max_iter
+    iterations = 0
+    refinements = 0
+    warming = resolution is not None
+    mode: np.ndarray | None = None
+    ratio = float("nan")
+    while True:
+        limit = min(budget, _WARMUP) if warming else budget
+        a, d, steps, converged, trace = _em(
+            a, d, solved, failed, grid, kind, limit, tol, prior_sd
+        )
+        budget -= steps
+        iterations += steps
+        warming = False
+        if resolution is None:
+            break
+        mode, width = posterior_width(a, d, solved, failed, mode)
+        reach = _extent(a, d, solved, failed, mode, width)
+        ratio = _resolution_ratio(grid, a, mode, width, reach) / resolution
+        if ratio <= 1.0:
+            if converged or budget <= 0:
+                break
+            continue
+        if refinements >= _MAX_REFINEMENTS or budget <= 0:
+            break
+        finer, _ = covering_grid(
+            a, d, solved, failed, resolution=resolution, max_nodes=max_nodes, start=mode
+        )
+        if finer.size >= max_nodes and grid.rule == "uniform" and grid.size >= max_nodes:
+            break
+        grid = finer
+        refinements += 1
+    return a, d, grid, iterations, converged, trace, ratio
+
+
 def fit_mml(
     data: ResponseMatrix,
     kind: str = "2pl",
     *,
+    slope_prior_sd: float | None = 0.5,
     n_quad: int = 61,
     resolution: float | None = 1.0,
     max_nodes: int = 2001,
@@ -586,6 +712,12 @@ def fit_mml(
 ) -> IRTFit:
     """Fit a 1PL or 2PL model by marginal maximum likelihood.
 
+    For the 2PL, ``slope_prior_sd`` is the standard deviation of the normal prior on the ratio
+    of each slope to a common slope that is estimated with them (see the module docstring).
+    ``slope_prior_sd=None`` gives the plain maximum-likelihood fit, which can fail to converge
+    when there are few models. The 1PL has one slope and takes no prior. The fit records the
+    common slope as ``slope_prior_mean``.
+
     EM starts on the ``n_quad``-point Gauss-Hermite rule. ``resolution`` is the largest node gap
     allowed, in units of the narrowest posterior width (and of ``1.25 / max|a_j|``); when the
     rule is coarser than that, EM continues on an equally spaced grid that meets it, with at
@@ -593,8 +725,8 @@ def fit_mml(
     posteriors look like, which is only right for short tests.
 
     EM stops when no item parameter moved by more than ``tol`` in an iteration, or after
-    ``max_iter`` iterations in total (``converged`` is then False). The fit is oriented so that
-    the discriminations sum to a positive number, which makes a higher ability mean a stronger
+    ``max_iter`` iterations (``converged`` is then False). The fit is oriented so that the
+    discriminations sum to a positive number, which makes a higher ability mean a stronger
     model.
 
     ``start`` warm-starts EM from ``(discrimination, intercept)`` arrays with one value per item
@@ -606,6 +738,8 @@ def fit_mml(
         raise ValueError(f"unknown model {kind!r}; use one of {', '.join(KINDS)}")
     if resolution is not None and not resolution > 0.0:
         raise ValueError("resolution must be positive, or None for a fixed Gauss-Hermite rule")
+    if slope_prior_sd is not None and not slope_prior_sd > 0.0:
+        raise ValueError("slope_prior_sd must be positive, or None for no prior")
     scores = data.scores
     status = _item_status(scores)
     keep = status == ESTIMATED
@@ -631,44 +765,28 @@ def fit_mml(
         a, d = a_start[keep].copy(), d_start[keep].copy()
         if not (np.isfinite(a).all() and np.isfinite(d).all()):
             raise ValueError("start must be finite for every item that is estimated")
-        if kind == "1pl":
-            a = np.full_like(a, a.mean())
+    if kind == "1pl":
+        a = np.full_like(a, a.mean())
 
-    grid = gauss_hermite_grid(n_quad)
-    budget = max_iter
-    iterations = 0
-    refinements = 0
-    warming = resolution is not None
-    mode: np.ndarray | None = None
-    ratio = float("nan")
-    while True:
-        limit = min(budget, _WARMUP) if warming else budget
-        a, d, steps, converged, trace = _em(a, d, solved, failed, grid, kind, limit, tol)
-        budget -= steps
-        iterations += steps
-        warming = False
-        if resolution is None:
-            break
-        mode, width = posterior_width(a, d, solved, failed, mode)
-        reach = _extent(a, d, solved, failed, mode, width)
-        ratio = _resolution_ratio(grid, a, mode, width, reach) / resolution
-        if ratio <= 1.0:
-            if converged or budget <= 0:
-                break
-            continue
-        if refinements >= _MAX_REFINEMENTS or budget <= 0:
-            break
-        finer, _ = covering_grid(
-            a, d, solved, failed, resolution=resolution, max_nodes=max_nodes, start=mode
-        )
-        if finer.size >= max_nodes and grid.rule == "uniform" and grid.size >= max_nodes:
-            break
-        grid = finer
-        refinements += 1
+    if kind == "1pl":
+        slope_prior_sd = None
+    a, d, grid, iterations, converged, trace, ratio = _run(
+        a,
+        d,
+        solved,
+        failed,
+        kind,
+        gauss_hermite_grid(n_quad),
+        resolution=resolution,
+        max_nodes=max_nodes,
+        max_iter=max_iter,
+        tol=tol,
+        prior_sd=slope_prior_sd,
+    )
     if a.sum() < 0.0:
         a = -a
     _, loglik = _posterior(a, d, solved, failed, grid.nodes, grid.log_weights)
-    trace.append(float(loglik.sum()))
+    trace.append(float(loglik.sum()) + _log_prior(a, slope_prior_sd))
 
     discrimination = np.full(data.n_items, np.nan)
     intercept = np.full(data.n_items, np.nan)
@@ -697,6 +815,8 @@ def fit_mml(
         resolution=ratio,
         item_tried=seen.sum(axis=0).astype(int),
         item_solved=np.where(seen, scores, 0.0).sum(axis=0).astype(int),
+        slope_prior_sd=slope_prior_sd,
+        slope_prior_mean=None if slope_prior_sd is None else _common_slope(a),
     )
 
 
