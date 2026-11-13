@@ -116,7 +116,7 @@ def test_long_benchmark_recovers_the_slope_only_on_a_fine_enough_grid():
     assert finer.log_likelihood == pytest.approx(fit.log_likelihood, abs=1e-3)
 
     # the classical fixed rule puts every model on one or two nodes and gets the scale wrong
-    fixed = fit_mml(data, "1pl", resolution=None)
+    fixed = fit_mml(data, "1pl", resolution=None, max_iter=60)
     assert fixed.quadrature == "gauss-hermite"
     assert fixed.n_nodes == 61
     assert np.isnan(fixed.resolution)

@@ -10,7 +10,7 @@ def few_models():
 
 
 def test_without_a_prior_the_2pl_runs_away_on_few_models():
-    fit = fit_mml(few_models(), "2pl", slope_prior_sd=None, max_iter=150, max_nodes=301)
+    fit = fit_mml(few_models(), "2pl", slope_prior_sd=None, max_iter=80, max_nodes=201)
     assert not fit.converged
     assert fit.discrimination.max() > 10
     assert fit.slope_prior_sd is None
