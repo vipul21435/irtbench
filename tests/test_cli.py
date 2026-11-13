@@ -143,3 +143,154 @@ def test_bundled_example_fits(capsys):
     assert captured.err == ""
     assert "- data: 40 models x 24 items, 27 of 960 cells missing" in captured.out
     assert "EM converged" in captured.out
+
+
+@pytest.fixture
+def benchmark_csv(tmp_path):
+    data, _ = simulate_responses(60, 30, kind="2pl", seed=71)
+    scores = data.scores.copy()
+    scores[:, 2] = 1.0 - scores[:, 2]  # one item that stronger models fail
+    extra = np.column_stack([np.ones(60), np.zeros(60)])
+    wider = ResponseMatrix(
+        data.models, data.items + ("free", "stuck"), np.hstack([scores, extra])
+    )
+    path = tmp_path / "bench.csv"
+    write_long(wider, path)
+    return path
+
+
+def test_items_lists_the_item_that_behaves_backwards(benchmark_csv, tmp_path, capsys):
+    out = tmp_path / "items.json"
+    assert main(["items", str(benchmark_csv), "--json", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert text.startswith("# irtbench items: bench.csv\n")
+    assert "- solved by all: 1; solved by none: 1" in text
+    assert "- negative discrimination: 1; negative correlation with the rest score: " in text
+    table = [line for line in text.splitlines() if line.startswith("| item-")]
+    assert table[0].startswith("| item-03 | negative_discrimination, negative_rest_correlation |")
+    rows = json.loads(out.read_text())["items"]
+    assert len(rows) == 32
+    assert rows[2]["flags"] == ["negative_discrimination", "negative_rest_correlation"]
+    assert rows[30]["flags"] == ["solved_by_all"]
+    assert rows[0]["infit"] is not None
+
+
+def test_subset_then_predict_round_trip(benchmark_csv, tmp_path, capsys):
+    saved = tmp_path / "subset.json"
+    assert main(["subset", str(benchmark_csv), "-k", "8", "--json", str(saved)]) == 0
+    chosen = capsys.readouterr().out.split()
+    assert len(chosen) == len(set(chosen)) == 8
+    payload = json.loads(saved.read_text())
+    assert payload["items"] == chosen
+    assert payload["method"] == "information"
+
+    # a new file holding only the answers on the chosen items
+    full = {}
+    for line in benchmark_csv.read_text().splitlines()[1:]:
+        model, item, score = line.split(",")
+        full.setdefault(model, []).append(int(score))
+    answers = tmp_path / "answers.csv"
+    kept = [
+        line for line in benchmark_csv.read_text().splitlines()[1:] if line.split(",")[1] in chosen
+    ]
+    answers.write_text("model,item,score\n" + "\n".join(kept) + "\n")
+    result = tmp_path / "predicted.json"
+    code = main(
+        ["predict", str(answers), "--fit", str(saved), "--rows", "0", "--json", str(result)]
+    )
+    assert code == 0
+    text = capsys.readouterr().out
+    assert "- fit: 2pl on 32 items; answers given on 8 of them" in text
+    assert "| model | answered | solved | ability | sd | predicted score |" in text
+    models = json.loads(result.read_text())["models"]
+    assert len(models) == 60
+    errors = [abs(row["predicted_score"] - np.mean(full[row["model"]])) for row in models]
+    assert np.mean(errors) < 0.1
+    assert all(row["n_answered"] == 8 for row in models)
+
+
+def test_subset_methods_and_errors(benchmark_csv, tmp_path, capsys):
+    assert main(["subset", str(benchmark_csv), "-k", "5", "--method", "random", "--seed", "3"]) == 0
+    first = capsys.readouterr().out
+    assert main(["subset", str(benchmark_csv), "-k", "5", "--method", "random", "--seed", "3"]) == 0
+    assert capsys.readouterr().out == first
+    assert main(["subset", str(benchmark_csv), "-k", "5", "--method", "cluster"]) == 0
+    assert len(capsys.readouterr().out.split()) == 5
+    assert main(["subset", str(benchmark_csv), "-k", "500"]) == 2
+    assert "k must be between 1 and 30" in capsys.readouterr().err
+
+
+def test_predict_rejects_a_file_that_is_not_a_fit(benchmark_csv, tmp_path, capsys):
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    assert main(["predict", str(benchmark_csv), "--fit", str(bad)]) == 2
+    assert "not valid JSON" in capsys.readouterr().err
+    bad.write_text('{"kind": "2pl"}')
+    assert main(["predict", str(benchmark_csv), "--fit", str(bad)]) == 2
+    assert "not a fit written by irtbench" in capsys.readouterr().err
+    bad.write_text("[1, 2]")
+    assert main(["predict", str(benchmark_csv), "--fit", str(bad)]) == 2
+    assert "not a fit written by irtbench" in capsys.readouterr().err
+
+
+def test_report_covers_every_section_and_writes_charts(benchmark_csv, tmp_path, capsys):
+    pytest.importorskip("matplotlib")
+    out, saved, plots = tmp_path / "report.md", tmp_path / "report.json", tmp_path / "charts"
+    code = main(
+        [
+            "report",
+            str(benchmark_csv),
+            "--folds",
+            "2",
+            "--splits",
+            "2",
+            "--sizes",
+            "5,10,999",
+            "--out",
+            str(out),
+            "--json",
+            str(saved),
+            "--plots",
+            str(plots),
+        ]
+    )
+    assert code == 0
+    assert capsys.readouterr().out == ""
+    text = out.read_text()
+    for heading in (
+        "# irtbench report: bench.csv",
+        "## 1PL against 2PL",
+        "Held-out cells (2-fold):",
+        "## Items that behave backwards (",
+        "## Predicting the full score of unseen models from k items",
+        "## Models (strongest first, 10 of 60)",
+        "## Charts",
+    ):
+        assert heading in text
+    assert "| k | information | cluster | random | random_mean |" in text
+    assert "Likelihood ratio: " in text
+    payload = json.loads(saved.read_text())
+    assert set(payload["subsets"]["sizes"]) == {"5", "10"}
+    assert set(payload["held_out_cells"]) == {"1pl", "2pl", "item_rate"}
+    assert payload["criteria"]["2pl"]["n_parameters"] == 60
+    for name in ("items.png", "information.png", "subsets.png"):
+        assert (plots / name).read_bytes().startswith(b"\x89PNG")
+
+
+def test_report_can_skip_the_slow_parts(benchmark_csv, capsys):
+    assert main(["report", str(benchmark_csv), "--folds", "0", "--splits", "0"]) == 0
+    text = capsys.readouterr().out
+    assert "Held-out cells" not in text
+    assert "Predicting the full score" not in text
+    assert main(["report", str(benchmark_csv), "--sizes", "ten"]) == 2
+    assert "--sizes takes comma-separated integers" in capsys.readouterr().err
+
+
+def test_no_prior_flag_reaches_the_fit(long_csv, tmp_path, capsys):
+    out = tmp_path / "fit.json"
+    assert main(["fit", str(long_csv), "--slope-prior-sd", "0", "--json", str(out)]) == 0
+    assert json.loads(out.read_text())["fit"]["slope_prior_sd"] is None
+    assert "slope prior" not in capsys.readouterr().out
+    assert main(["fit", str(long_csv), "--json", str(out)]) == 0
+    assert json.loads(out.read_text())["fit"]["slope_prior_sd"] == 0.5
+    assert "slope prior sd 0.5 around a common slope of" in capsys.readouterr().out
