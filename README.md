@@ -437,9 +437,13 @@ uv run --extra dev ruff check .
 uv run --extra dev pytest -q --cov=irtbench
 ```
 
-133 tests, 98 % line coverage on Python 3.12. The same steps pass on Python 3.10, also with the
+139 tests, 98 % line coverage on Python 3.12. The same steps pass on Python 3.10, also with the
 lowest declared versions of numpy (1.23), scipy (1.10) and matplotlib (3.7). The tests build
-their own data and need no network.
+their own data and need no network. The suite takes 6 to 8 seconds on either version here
+(8 with coverage on), measured on a loaded laptop. A first run in a new environment is slower:
+62 seconds here with the lowest versions, of which about 8 were the tests' own processor time.
+Part of that is matplotlib listing the system fonts once; with an empty matplotlib cache the
+one test that draws charts took 13 seconds by itself.
 
 ## Licence
 
