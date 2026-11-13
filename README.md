@@ -295,7 +295,8 @@ python scripts/fetch_swebench_verified.py data
 python examples/swebench_verified_study.py data/swebench_verified.csv --json study.json --plots docs
 ```
 
-The study took 22 seconds here. All numbers below are from that run.
+The study took 22 seconds in the run the numbers below come from, measured on a loaded laptop;
+an earlier run on the same machine under heavier load took 112 seconds.
 
 **Items that carry no information.** No instance is solved by every submission. 26 of the 500
 are solved by none.

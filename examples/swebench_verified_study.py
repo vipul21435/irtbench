@@ -7,7 +7,8 @@ Build the matrix first (nothing from the source repository is stored in this one
         --json study.json --plots docs
 
 Prints the numbers quoted in the README, writes them as JSON and draws the charts (the charts
-need matplotlib). Takes a few minutes.
+need matplotlib). Takes between half a minute and a few minutes, depending on what else the
+machine is doing.
 """
 
 from __future__ import annotations
