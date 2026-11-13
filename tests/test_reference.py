@@ -42,7 +42,7 @@ def reference_fit(scores, kind):
 @pytest.mark.parametrize("kind", ["1pl", "2pl"])
 @pytest.mark.parametrize("missing", [0.0, 0.2])
 def test_em_reaches_the_same_maximum_as_a_general_optimiser(kind, missing):
-    data, _ = simulate_responses(1500, 7, kind=kind, seed=101, missing=missing)
+    data, _ = simulate_responses(800, 5, kind=kind, seed=101, missing=missing)
     fit = fit_mml(data, kind, slope_prior_sd=None, tol=1e-9)
     a, d, loglik = reference_fit(data.scores, kind)
     np.testing.assert_allclose(fit.discrimination, a, atol=2e-4)

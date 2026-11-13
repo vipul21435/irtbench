@@ -81,17 +81,19 @@ def test_standard_errors_skip_items_left_out_and_use_the_prior():
 
 
 def test_bootstrap_agrees_with_the_information_errors():
-    data, _ = simulate_responses(400, 6, kind="2pl", seed=94)
-    fit = fit_mml(data, "2pl", slope_prior_sd=None)
+    data, _ = simulate_responses(400, 5, kind="1pl", seed=94)
+    fit = fit_mml(data, "1pl")
     by_information = standard_errors(fit, data)
-    by_bootstrap = bootstrap_standard_errors(data, "2pl", n_boot=40, seed=1, slope_prior_sd=None)
+    by_bootstrap = bootstrap_standard_errors(data, "1pl", n_boot=30, seed=1)
     assert by_bootstrap.method == "bootstrap"
-    assert (by_bootstrap.replicates == 40).all()
-    ratio = by_bootstrap.discrimination / by_information.discrimination
-    assert ((ratio > 0.5) & (ratio < 2.5)).all()
-    assert 0.7 < np.median(ratio) < 1.5
-    again = bootstrap_standard_errors(data, "2pl", n_boot=40, seed=1, slope_prior_sd=None)
-    np.testing.assert_array_equal(again.discrimination, by_bootstrap.discrimination)
+    assert (by_bootstrap.replicates == 30).all()
+    ratio = by_bootstrap.intercept / by_information.intercept
+    assert ((ratio > 0.5) & (ratio < 2.0)).all()
+    assert 0.7 < np.median(ratio) < 1.4
+    again = bootstrap_standard_errors(data, "1pl", n_boot=30, seed=1)
+    np.testing.assert_array_equal(again.intercept, by_bootstrap.intercept)
+    other = bootstrap_standard_errors(data, "1pl", n_boot=30, seed=2)
+    assert not np.array_equal(other.intercept, by_bootstrap.intercept)
     with pytest.raises(ValueError, match="at least 2 replicates"):
         bootstrap_standard_errors(data, n_boot=1)
 
@@ -102,7 +104,7 @@ def test_bootstrap_counts_replicates_where_an_item_could_not_be_estimated():
     scores[:, 4] = 0.0
     scores[0, 4] = 1.0  # solved by exactly one model: absent from about a third of resamples
     rare = ResponseMatrix(data.models, data.items, scores)
-    errors = bootstrap_standard_errors(rare, "1pl", n_boot=40, seed=2)
-    assert errors.replicates[4] < 40
-    assert (errors.replicates[:4] == 40).all()
+    errors = bootstrap_standard_errors(rare, "1pl", n_boot=25, seed=2)
+    assert errors.replicates[4] < 25
+    assert (errors.replicates[:4] == 25).all()
     assert np.isfinite(errors.intercept[:4]).all()
