@@ -89,7 +89,7 @@ def plot_items(fit: IRTFit, path: Path) -> Path:
             difficulty[odd], slope[odd], s=46, color=SERIES["cluster"], marker="D",
             edgecolors=SURFACE, linewidths=0.8, label="negative discrimination",
         )
-        axes.legend(frameon=False, labelcolor=SECONDARY, loc="upper left")
+        axes.legend(frameon=False, labelcolor=SECONDARY, loc="upper right")
     hidden = int((~inside).sum())
     if hidden:
         axes.annotate(
@@ -133,7 +133,7 @@ def plot_subsets(subsets: dict[str, object], path: Path) -> Path:
         f"Predicting the full score of unseen models ({subsets['n_test']} per split, "
         f"{subsets['splits']} splits)",
         "items the model is run on",
-        "mean absolute error (score points)",
+        "mean absolute error (percentage points of score)",
     )
     for name in names:
         errors = [100.0 * sizes[str(k)][name]["mae"] for k in ks]  # type: ignore[index]

@@ -3,9 +3,11 @@
 Build the matrix first (nothing from the source repository is stored in this one):
 
     python scripts/fetch_swebench_verified.py DATA_DIR
-    python examples/swebench_verified_study.py DATA_DIR/swebench_verified.csv --json study.json
+    python examples/swebench_verified_study.py DATA_DIR/swebench_verified.csv \\
+        --json study.json --plots docs
 
-Prints the numbers quoted in the README and writes them as JSON. Takes a few minutes.
+Prints the numbers quoted in the README, writes them as JSON and draws the charts (the charts
+need matplotlib). Takes a few minutes.
 """
 
 from __future__ import annotations
@@ -13,10 +15,11 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 
-from irtbench import fit_mml, read_matrix
+from irtbench import estimate_abilities, fit_jml, fit_mml, read_matrix, standard_errors
 from irtbench.compare import cross_validate, information_criteria, likelihood_ratio
 from irtbench.diagnostics import (
     NEGATIVE_DISCRIMINATION,
@@ -32,6 +35,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("matrix", help="swebench_verified.csv written by the fetch script")
     parser.add_argument("--json", help="write the numbers to this file")
+    parser.add_argument("--plots", help="write items.png, information.png, subsets.png here")
     parser.add_argument("--splits", type=int, default=20, help="train/test splits of the models")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -74,15 +78,31 @@ def main() -> None:
         "quantiles": {str(q): float(np.quantile(slopes, q)) for q in QUANTILES},
         "below_half_of_median": int((slopes < 0.5 * np.median(slopes)).sum()),
     }
-    out["negative_discrimination"] = [
+    errors = standard_errors(two, data)
+    lowest = np.argsort(np.where(two.estimated, two.discrimination, np.inf))[:10]
+    out["lowest_discrimination"] = [
         {
-            "item": item,
-            "discrimination": float(two.discrimination[data.items.index(item)]),
-            "solved": float(shares[data.items.index(item)]),
-            "rest_correlation": float(report.rest_correlation[data.items.index(item)]),
+            "item": data.items[j],
+            "discrimination": float(two.discrimination[j]),
+            "se": float(errors.discrimination[j]),
+            "solved": float(shares[j]),
+            "rest_correlation": float(report.rest_correlation[j]),
         }
-        for item in negative
+        for j in lowest
     ]
+    out["negative_discrimination"] = list(negative)
+    out["median_discrimination_se"] = float(np.nanmedian(errors.discrimination))
+    abilities = estimate_abilities(two, data)
+    out["ability_sd_median"] = float(np.median(abilities.sd))
+    joint = fit_jml(data, "1pl")
+    rasch_abilities = estimate_abilities(one, data).theta
+    out["joint_vs_marginal_1pl"] = {
+        "ability_correlation": float(np.corrcoef(joint.ability, rasch_abilities)[0, 1]),
+        "intercept_correlation": float(
+            np.corrcoef(joint.intercept[one.estimated], one.intercept[one.estimated])[0, 1]
+        ),
+        "converged": joint.converged,
+    }
     out["negative_rest_correlation"] = list(backwards)
     out["prior_sensitivity"] = {}
     for sd in (0.25, 1.0):
@@ -100,6 +120,9 @@ def main() -> None:
     print(f"1PL logL {one.log_likelihood:.1f}, 2PL logL {two.log_likelihood:.1f}")
     print("discrimination quantiles:", out["discrimination"]["quantiles"])
     print(f"negative discrimination: {len(negative)} items: {', '.join(negative[:8])}")
+    for row in out["lowest_discrimination"][:4]:
+        print(f"  {row['item']}: a = {row['discrimination']:.2f} (se {row['se']:.2f}), "
+              f"solved by {row['solved']:.2f}, rest correlation {row['rest_correlation']:.2f}")
     print(f"negative rest correlation: {len(backwards)} items")
 
     out["held_out_cells"] = cross_validate(data, folds=5, seed=args.seed)
@@ -111,6 +134,11 @@ def main() -> None:
         cells = ", ".join(f"{name} {value['mae']:.4f}" for name, value in row.items())
         print(f"k={size}: MAE {cells}")
 
+    if args.plots:
+        from irtbench.plots import save_plots
+
+        charts = save_plots(Path(args.plots), two, abilities.theta, out["subsets"])
+        print("charts:", ", ".join(str(path) for path in charts))
     out["seconds"] = round(time.time() - started, 1)
     print(f"done in {out['seconds']} s")
     if args.json:
