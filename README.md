@@ -392,7 +392,7 @@ uv run --extra dev ruff check .
 uv run --extra dev pytest -q --cov=irtbench
 ```
 
-132 tests, 98 % line coverage on Python 3.12. The same steps pass on Python 3.10, also with the
+133 tests, 98 % line coverage on Python 3.12. The same steps pass on Python 3.10, also with the
 lowest declared versions of numpy (1.23), scipy (1.10) and matplotlib (3.7). The tests build
 their own data and need no network.
 

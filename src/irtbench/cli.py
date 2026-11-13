@@ -184,9 +184,22 @@ def _models_json(
     return rows
 
 
+def _json_ready(value: object) -> object:
+    """Replace numbers JSON cannot hold (NaN, infinities) by ``None``, at any depth."""
+    if isinstance(value, dict):
+        return {key: _json_ready(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, float | np.floating):
+        return float(value) if np.isfinite(value) else None
+    if isinstance(value, np.integer):
+        return int(value)
+    return value
+
+
 def _write_json(path: str | None, payload: dict[str, object]) -> None:
     if path:
-        Path(path).write_text(json.dumps(payload, indent=2, allow_nan=False) + "\n")
+        Path(path).write_text(json.dumps(_json_ready(payload), indent=2, allow_nan=False) + "\n")
 
 
 def _data_json(data: ResponseMatrix) -> dict[str, int]:

@@ -307,3 +307,14 @@ def test_items_can_add_standard_errors(benchmark_csv, tmp_path, capsys):
     code = main(["items", str(benchmark_csv), "--se", "bootstrap", "--boot", "5", "--rows", "3"])
     assert code == 0
     assert "## Lowest discriminations with bootstrap standard errors" in capsys.readouterr().out
+
+
+def test_json_output_never_holds_nan(tmp_path):
+    from irtbench.cli import _json_ready, _write_json
+
+    payload = {"a": float("nan"), "b": [1.5, float("inf"), np.float64(2.0)], "c": np.int64(3)}
+    assert _json_ready(payload) == {"a": None, "b": [1.5, None, 2.0], "c": 3}
+    out = tmp_path / "x.json"
+    _write_json(str(out), payload)
+    assert json.loads(out.read_text()) == {"a": None, "b": [1.5, None, 2.0], "c": 3}
+    _write_json(None, payload)
