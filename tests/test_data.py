@@ -116,6 +116,40 @@ def test_read_long_csv_needs_its_columns(tmp_path):
         read_long(path)
 
 
+def test_read_long_csv_rejects_a_row_shorter_than_the_header(tmp_path):
+    path = tmp_path / "short.csv"
+    # the second record lost its score field; an empty score needs its comma ("m2,q1,")
+    path.write_text("model,item,score\nm1,q1,1\nm2,q1\nm2,q2,0\n")
+    with pytest.raises(ValueError, match=r"short\.csv line 3: 2 fields for the 3 columns"):
+        read_long(path)
+    path.write_text("model,item,score\nm1,q1,1\nm2\n")
+    with pytest.raises(ValueError, match=r"line 3: 1 fields for the 3 columns"):
+        read_long(path)
+    path.write_text("run,model,item,score\n7,m1,q1,1\n7,m2,q1\n")
+    with pytest.raises(ValueError, match=r"line 3: 3 fields for the 4 columns"):
+        read_matrix(path)
+    path.write_text("model,item,score\nm1,q1,1\nm2,q1,\n")
+    matrix = read_long(path)
+    assert matrix.models == ("m1", "m2")
+    assert matrix.n_missing == 1
+
+
+def test_a_byte_order_mark_is_not_read_as_part_of_the_first_column(tmp_path):
+    long_path = tmp_path / "long.csv"
+    long_path.write_text("model,item,score\nm1,q1,1\nm2,q1,0\n", encoding="utf-8-sig")
+    assert long_path.read_bytes().startswith(b"\xef\xbb\xbf")
+    for matrix in (read_long(long_path), read_matrix(long_path)):
+        assert matrix.models == ("m1", "m2")
+        assert matrix.items == ("q1",)
+        assert matrix.scores.tolist() == [[1.0], [0.0]]
+    wide_path = tmp_path / "wide.csv"
+    wide_path.write_text("model,q1,q2\nm1,1,0\n", encoding="utf-8-sig")
+    assert read_wide(wide_path).items == ("q1", "q2")
+    lines_path = tmp_path / "long.jsonl"
+    lines_path.write_text('{"model": "m1", "item": "q1", "score": 1}\n', encoding="utf-8-sig")
+    assert read_long(lines_path).scores.tolist() == [[1.0]]
+
+
 def test_read_long_jsonl(tmp_path):
     path = tmp_path / "results.jsonl"
     rows = [

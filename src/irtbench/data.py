@@ -7,6 +7,9 @@ Two layouts are read:
 
 A score is 1 (solved) or 0 (not solved). A cell that is absent, empty or one of ``NA``, ``NaN``,
 ``null``, ``None`` is missing and is stored as NaN.
+
+Files are read as UTF-8; a byte-order mark at the start, which spreadsheet programs add when
+they save CSV, is skipped.
 """
 
 from __future__ import annotations
@@ -23,6 +26,8 @@ _MISSING = frozenset({"", "na", "n/a", "nan", "none", "null"})
 _ONE = frozenset({"1", "1.0", "true"})
 _ZERO = frozenset({"0", "0.0", "false"})
 _JSONL_SUFFIXES = frozenset({".jsonl", ".ndjson"})
+# UTF-8 that also accepts a leading byte-order mark instead of gluing it to the first field
+_ENCODING = "utf-8-sig"
 
 
 def parse_score(value: object) -> float:
@@ -183,7 +188,7 @@ def _jsonl_records(
     path: Path, columns: tuple[str, str, str]
 ) -> Iterable[tuple[object, object, object]]:
     model_col, item_col, score_col = columns
-    with path.open(encoding="utf-8") as handle:
+    with path.open(encoding=_ENCODING) as handle:
         for number, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
@@ -205,20 +210,28 @@ def _csv_records(
     path: Path, columns: tuple[str, str, str]
 ) -> Iterable[tuple[object, object, object]]:
     model_col, item_col, score_col = columns
-    with path.open(encoding="utf-8", newline="") as handle:
+    with path.open(encoding=_ENCODING, newline="") as handle:
         reader = csv.DictReader(handle, delimiter=_delimiter(path))
         header = reader.fieldnames or []
         absent = [column for column in columns if column not in header]
         if absent:
             raise ValueError(f"{path.name}: no column named {', '.join(absent)}")
         for row in reader:
+            # a row with fewer fields than the header leaves the rest as None, which would
+            # otherwise pass as a missing score or as a model or item called "None"
+            fields = sum(value is not None for name, value in row.items() if name is not None)
+            if fields < len(header):
+                raise ValueError(
+                    f"{path.name} line {reader.line_num}: {fields} fields for the "
+                    f"{len(header)} columns of the header"
+                )
             yield row[model_col], row[item_col], row[score_col]
 
 
 def read_wide(path: str | Path) -> ResponseMatrix:
     """Read a wide matrix: a header of item ids, then one row per model led by its name."""
     path = Path(path)
-    with path.open(encoding="utf-8", newline="") as handle:
+    with path.open(encoding=_ENCODING, newline="") as handle:
         rows = [row for row in csv.reader(handle, delimiter=_delimiter(path)) if row]
     if len(rows) < 2 or len(rows[0]) < 2:
         raise ValueError(f"{path.name}: expected a header row of items and at least one model row")
@@ -261,7 +274,7 @@ def read_matrix(
         if path.suffix.lower() in _JSONL_SUFFIXES:
             fmt = "long"
         else:
-            with path.open(encoding="utf-8", newline="") as handle:
+            with path.open(encoding=_ENCODING, newline="") as handle:
                 header = next(csv.reader(handle, delimiter=_delimiter(path)), [])
             fmt = "long" if {model_col, item_col, score_col} <= set(header) else "wide"
     if fmt == "long":
