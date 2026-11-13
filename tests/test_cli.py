@@ -30,7 +30,7 @@ def test_fit_prints_a_summary_and_writes_json(long_csv, tmp_path, capsys):
     text = captured.out
     assert text.startswith("# irtbench fit: results.csv\n")
     assert "- data: 80 models x 8 items, " in text
-    assert "- model: 1pl by marginal maximum likelihood (EM, 61 Gauss-Hermite nodes)" in text
+    assert "- model: 1pl by marginal maximum likelihood (EM on a " in text
     assert "with 9 parameters; EM converged in" in text
     assert "## Items (hardest first, 8 of 8)" in text
     assert "## Models (strongest first, 10 of 80)" in text

@@ -10,13 +10,20 @@ discrimination ``a``. That is the Rasch model ``sigmoid(t_i - c_j)`` with ``t_i 
 distributed ``N(0, a^2)`` and ``c_j = -d_j``, written so that the 1PL is the 2PL with equal slopes
 and the two can be compared by likelihood.
 
-Estimation. Abilities are integrated out against the normal density on a fixed Gauss-Hermite grid
-and the item parameters maximise the resulting marginal likelihood. EM alternates
+Estimation. Abilities are integrated out against the normal density on a quadrature grid and the
+item parameters maximise the resulting marginal likelihood. EM alternates
 
 * E-step: each model's posterior weight on every node, then for every item the expected number
   of models at each node that tried it (``n``) and that solved it (``r``);
 * M-step: a weighted logistic regression of ``r`` out of ``n`` on the node values, per item for
   the 2PL and with one shared slope for the 1PL, solved by Newton steps with backtracking.
+
+Quadrature. EM starts on a Gauss-Hermite rule. A fixed rule is only right while its nodes are
+closer together than the posteriors are wide, and a model that answered hundreds of items has a
+posterior standard deviation well below 0.1. So the node gap is compared with the width of every
+posterior (the curvature of the log-posterior at its mode), and when the rule is too coarse EM
+continues on an equally spaced grid whose step is below the narrowest posterior and below the
+scale ``1 / max|a_j|`` on which the steepest item curve changes.
 
 Items whose observed cells are all 1 or all 0 have no finite maximum-likelihood intercept. They
 are flagged and left out of the fit; in the limit they contribute nothing to the likelihood.
@@ -29,7 +36,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from irtbench.data import ResponseMatrix
-from irtbench.quadrature import gauss_hermite
+from irtbench.quadrature import Grid, gauss_hermite_grid, uniform_grid
 
 KINDS = ("1pl", "2pl")
 
@@ -40,6 +47,14 @@ NO_DATA = "no_data"
 
 _RIDGE = 1e-10
 _MIN_ITEMS = {"1pl": 2, "2pl": 3}
+_WARMUP = 30  # EM iterations on the starting rule before its resolution is checked
+_REACH = 8.0  # a grid spans every posterior out to at least this many of its widths
+_DROP = 32.0  # ... and further, until the log-posterior is this far below its peak
+_PRIOR_REACH = 8.5  # ... but never further than this from the mode (the prior bounds the tail)
+_COVERED = 0.8  # a grid is rebuilt when a posterior needs more than this share of its span
+_SAFETY = 0.8  # a rebuilt grid is this much finer than required, so it stays adequate
+_SLOPE_RULE = 1.25  # node gap allowed per unit of 1 / max|a|
+_MAX_REFINEMENTS = 8
 
 
 def sigmoid(z: np.ndarray | float) -> np.ndarray:
@@ -53,7 +68,12 @@ class IRTFit:
 
     ``discrimination`` and ``intercept`` have one entry per item. Items that were not estimated
     (see ``status``) hold NaN for the discrimination and ``+inf`` (solved by all), ``-inf``
-    (solved by none) or NaN (no data) for the intercept.
+    (solved by none) or NaN (no data) for the intercept. ``item_tried`` and ``item_solved`` count
+    the observed and the solved cells of each item in the data the fit was made on.
+
+    ``quadrature``, ``n_nodes`` and ``resolution`` describe the grid EM finished on:
+    ``resolution`` is the largest ratio of node gap to posterior width over the models (and the
+    matching ratio for the steepest item), which the fit keeps at or below its target.
     """
 
     kind: str
@@ -69,6 +89,16 @@ class IRTFit:
     iterations: int
     converged: bool
     trace: tuple[float, ...] = ()
+    quadrature: str = "gauss-hermite"
+    n_nodes: int = 0
+    resolution: float = float("nan")
+    item_tried: np.ndarray | None = None
+    item_solved: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("item_tried", "item_solved"):
+            if getattr(self, name) is None:
+                object.__setattr__(self, name, np.zeros(len(self.items), dtype=int))
 
     @classmethod
     def from_parameters(
@@ -123,6 +153,15 @@ class IRTFit:
                 out[index] = np.inf
         return out
 
+    @property
+    def smoothed_rate(self) -> np.ndarray:
+        """``(solved + 0.5) / (tried + 1)`` per item: a solve rate that is never exactly 0 or 1.
+
+        It is what the predictive functions use for items left out of the fit, whose fitted
+        probability would otherwise be exactly 1 or 0.
+        """
+        return (self.item_solved + 0.5) / (self.item_tried + 1.0)
+
     def probability(self, theta: np.ndarray | list[float] | float) -> np.ndarray:
         """Probability of solving each item (columns) at each ability in ``theta`` (rows).
 
@@ -148,6 +187,9 @@ class IRTFit:
             "kind": self.kind,
             "method": "mml-em",
             "n_quad": self.n_quad,
+            "quadrature": self.quadrature,
+            "n_nodes": self.n_nodes,
+            "resolution": _finite(self.resolution),
             "log_likelihood": _finite(self.log_likelihood),
             "n_parameters": self.n_parameters,
             "n_models": self.n_models,
@@ -161,10 +203,44 @@ class IRTFit:
                     "discrimination": _finite(self.discrimination[index]),
                     "difficulty": _finite(difficulty[index]),
                     "intercept": _finite(self.intercept[index]),
+                    "tried": int(self.item_tried[index]),
+                    "solved": int(self.item_solved[index]),
                 }
                 for index, item in enumerate(self.items)
             ],
         }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> IRTFit:
+        """Rebuild a fit from :meth:`to_dict` output (the ``fit`` block of the CLI's JSON)."""
+        try:
+            rows = list(payload["items"])  # type: ignore[call-overload]
+            status = tuple(str(row["status"]) for row in rows)
+            a = np.array([_or_nan(row["discrimination"]) for row in rows], dtype=float)
+            d = np.array([_or_nan(row["intercept"]) for row in rows], dtype=float)
+            d[[state == ALL_CORRECT for state in status]] = np.inf
+            d[[state == ALL_INCORRECT for state in status]] = -np.inf
+            return cls(
+                kind=str(payload["kind"]),
+                items=tuple(str(row["item"]) for row in rows),
+                discrimination=a,
+                intercept=d,
+                status=status,
+                log_likelihood=_or_nan(payload.get("log_likelihood")),
+                n_parameters=int(payload["n_parameters"]),  # type: ignore[call-overload]
+                n_models=int(payload.get("n_models", 0)),  # type: ignore[call-overload]
+                n_observations=int(payload.get("n_observations", 0)),  # type: ignore[call-overload]
+                n_quad=int(payload.get("n_quad", 61)),  # type: ignore[call-overload]
+                iterations=int(payload.get("iterations", 0)),  # type: ignore[call-overload]
+                converged=bool(payload.get("converged", True)),
+                quadrature=str(payload.get("quadrature", "gauss-hermite")),
+                n_nodes=int(payload.get("n_nodes", 0)),  # type: ignore[call-overload]
+                resolution=_or_nan(payload.get("resolution")),
+                item_tried=np.array([int(row.get("tried", 0)) for row in rows]),
+                item_solved=np.array([int(row.get("solved", 0)) for row in rows]),
+            )
+        except (KeyError, TypeError, AttributeError) as error:
+            raise ValueError(f"not a fit written by irtbench: {error!r}") from None
 
 
 @dataclass(frozen=True)
@@ -193,6 +269,10 @@ def _finite(value: float) -> float | None:
     return number if np.isfinite(number) else None
 
 
+def _or_nan(value: object) -> float:
+    return float("nan") if value is None else float(value)  # type: ignore[arg-type]
+
+
 def _posterior(
     a: np.ndarray,
     d: np.ndarray,
@@ -214,6 +294,117 @@ def _posterior(
     total = posterior.sum(axis=1, keepdims=True)
     posterior /= total
     return posterior, (peak + np.log(total))[:, 0]
+
+
+def posterior_width(
+    a: np.ndarray,
+    d: np.ndarray,
+    solved: np.ndarray,
+    failed: np.ndarray,
+    start: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Mode of each model's ability posterior and its width from the curvature at the mode.
+
+    The log-posterior is ``sum_j [x_j log P_j + (1 - x_j) log(1 - P_j)] - theta^2 / 2``. It is
+    strictly concave, so damped Newton steps find the mode; the width is
+    ``1 / sqrt(1 + sum_j a_j^2 P_j (1 - P_j))`` there, summed over the items the model answered.
+    """
+    theta = np.zeros(solved.shape[0]) if start is None else np.array(start, dtype=float)
+    seen = solved + failed
+    a_squared = a * a
+    for _ in range(60):
+        p = sigmoid(np.outer(theta, a) + d[None, :])
+        gradient = (solved - seen * p) @ a - theta
+        curvature = (seen * p * (1.0 - p)) @ a_squared + 1.0
+        step = np.clip(gradient / curvature, -1.0, 1.0)
+        theta = theta + step
+        if float(np.abs(step).max()) < 1e-9:
+            break
+    p = sigmoid(np.outer(theta, a) + d[None, :])
+    curvature = (seen * p * (1.0 - p)) @ a_squared + 1.0
+    return theta, 1.0 / np.sqrt(curvature)
+
+
+def _extent(
+    a: np.ndarray,
+    d: np.ndarray,
+    solved: np.ndarray,
+    failed: np.ndarray,
+    mode: np.ndarray,
+    width: np.ndarray,
+) -> np.ndarray:
+    """Distance from each mode beyond which that posterior is negligible.
+
+    A posterior built from few answers has tails close to the prior's, far heavier than its
+    curvature at the mode suggests, so the distance starts at a multiple of the width and grows
+    until the log-posterior has dropped enough on both sides. The log-posterior is concave with
+    curvature at most -1, which bounds the search: ``_PRIOR_REACH`` is always enough.
+    """
+
+    def log_posterior(theta: np.ndarray) -> np.ndarray:
+        z = np.outer(theta, a) + d[None, :]
+        log_p1 = -np.logaddexp(0.0, -z)
+        return (solved * log_p1 + failed * (log_p1 - z)).sum(axis=1) - 0.5 * theta * theta
+
+    peak = log_posterior(mode)
+    reach = np.minimum(_REACH * width, _PRIOR_REACH)
+    for _ in range(12):
+        drop = np.minimum(peak - log_posterior(mode - reach), peak - log_posterior(mode + reach))
+        short = (drop < _DROP) & (reach < _PRIOR_REACH)
+        if not short.any():
+            break
+        reach = np.where(short, np.minimum(1.5 * reach, _PRIOR_REACH), reach)
+    return reach
+
+
+def _required_gap(a: np.ndarray, width: np.ndarray, resolution: float) -> float:
+    """Largest node gap that resolves every posterior and the steepest item curve."""
+    gap = float(width.min())
+    steepest = float(np.abs(a).max()) if a.size else 0.0
+    if steepest > 0.0:
+        gap = min(gap, _SLOPE_RULE / steepest)
+    return resolution * gap
+
+
+def _resolution_ratio(
+    grid: Grid, a: np.ndarray, mode: np.ndarray, width: np.ndarray, reach: np.ndarray
+) -> float:
+    """How coarse ``grid`` is for these posteriors: at most 1 means fine enough.
+
+    Infinite when a posterior reaches beyond the grid.
+    """
+    lower = float((mode - _COVERED * reach).min())
+    upper = float((mode + _COVERED * reach).max())
+    if not grid.covers(lower, upper):
+        return float("inf")
+    gap = grid.gap_at(mode)
+    ratio = float((gap / width).max())
+    steepest = float(np.abs(a).max()) if a.size else 0.0
+    return max(ratio, float(gap.max()) * steepest / _SLOPE_RULE)
+
+
+def covering_grid(
+    a: np.ndarray,
+    d: np.ndarray,
+    solved: np.ndarray,
+    failed: np.ndarray,
+    *,
+    resolution: float = 1.0,
+    max_nodes: int = 2001,
+    start: np.ndarray | None = None,
+) -> tuple[Grid, float]:
+    """An equally spaced grid fine and wide enough for the posteriors of these models.
+
+    Returns the grid and its resolution ratio (above 1 only when ``max_nodes`` was too few).
+    """
+    mode, width = posterior_width(a, d, solved, failed, start)
+    reach = _extent(a, d, solved, failed, mode, width)
+    lower = float((mode - reach).min())
+    upper = float((mode + reach).max())
+    spacing = _SAFETY * _required_gap(a, width, resolution)
+    spacing = max(spacing, (upper - lower) / (max_nodes - 1))
+    grid = uniform_grid(spacing, lower, upper)
+    return grid, _resolution_ratio(grid, a, mode, width, reach) / resolution
 
 
 def _expected_loglik(
@@ -330,21 +521,81 @@ def _item_status(scores: np.ndarray) -> np.ndarray:
     return status
 
 
+def _em(
+    a: np.ndarray,
+    d: np.ndarray,
+    solved: np.ndarray,
+    failed: np.ndarray,
+    grid: Grid,
+    kind: str,
+    max_iter: int,
+    tol: float,
+) -> tuple[np.ndarray, np.ndarray, int, bool, list[float]]:
+    """Run EM on one grid; returns the parameters, iterations used, convergence and the trace.
+
+    After each M-step the ability distribution is standardised again: the mean ``m`` and the
+    variance ``v`` of the abilities under the current posteriors are what an ability
+    distribution ``N(m, v)`` with free parameters would be set to, and moving to
+    ``(theta - m) / sqrt(v)`` turns the item parameters into ``a * sqrt(v)`` and ``d + a * m``.
+    This expanded step matters on long tests, where the answers pin down ``a * theta`` closely
+    and plain EM, which can only change the scale through the prior, needs hundreds of
+    iterations. On a coarse grid the rescaling is not exact; if it ever lowers the likelihood
+    it is undone and switched off.
+    """
+    m_step = _m_step_1pl if kind == "1pl" else _m_step_2pl
+    nodes = grid.nodes
+    trace: list[float] = []
+    converged = False
+    expand = True
+    plain: tuple[np.ndarray, np.ndarray] | None = None
+    steps = 0
+    while steps < max_iter and not converged:
+        steps += 1
+        posterior, loglik = _posterior(a, d, solved, failed, nodes, grid.log_weights)
+        objective = float(loglik.sum())
+        if expand and plain is not None and objective < trace[-1] - 1e-9 * (1.0 + abs(trace[-1])):
+            a, d = plain
+            expand = False
+            posterior, loglik = _posterior(a, d, solved, failed, nodes, grid.log_weights)
+            objective = float(loglik.sum())
+        trace.append(objective)
+        a_new, d_new = m_step(a, d, solved.T @ posterior, failed.T @ posterior, nodes)
+        if expand:
+            plain = (a_new, d_new)
+            mass = posterior.sum(axis=0) / posterior.shape[0]
+            mean = float(mass @ nodes)
+            variance = float(mass @ (nodes * nodes)) - mean * mean
+            if variance > 0.0:
+                a_new, d_new = a_new * np.sqrt(variance), d_new + a_new * mean
+        moved = max(float(np.abs(a_new - a).max()), float(np.abs(d_new - d).max()))
+        a, d = a_new, d_new
+        converged = moved < tol
+    return a, d, steps, converged, trace
+
+
 def fit_mml(
     data: ResponseMatrix,
     kind: str = "2pl",
     *,
     n_quad: int = 61,
+    resolution: float | None = 1.0,
+    max_nodes: int = 2001,
     max_iter: int = 2000,
     tol: float = 1e-6,
     start: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> IRTFit:
     """Fit a 1PL or 2PL model by marginal maximum likelihood.
 
-    ``n_quad`` is the number of Gauss-Hermite nodes. EM stops when no item parameter moved by
-    more than ``tol`` in an iteration, or after ``max_iter`` iterations (``converged`` is then
-    False). The fit is oriented so that the discriminations sum to a positive number, which
-    makes a higher ability mean a stronger model.
+    EM starts on the ``n_quad``-point Gauss-Hermite rule. ``resolution`` is the largest node gap
+    allowed, in units of the narrowest posterior width (and of ``1.25 / max|a_j|``); when the
+    rule is coarser than that, EM continues on an equally spaced grid that meets it, with at
+    most ``max_nodes`` nodes. ``resolution=None`` keeps the Gauss-Hermite rule whatever the
+    posteriors look like, which is only right for short tests.
+
+    EM stops when no item parameter moved by more than ``tol`` in an iteration, or after
+    ``max_iter`` iterations in total (``converged`` is then False). The fit is oriented so that
+    the discriminations sum to a positive number, which makes a higher ability mean a stronger
+    model.
 
     ``start`` warm-starts EM from ``(discrimination, intercept)`` arrays with one value per item
     of ``data``, for example those of an earlier fit; entries of items that are not estimated
@@ -353,6 +604,8 @@ def fit_mml(
     """
     if kind not in KINDS:
         raise ValueError(f"unknown model {kind!r}; use one of {', '.join(KINDS)}")
+    if resolution is not None and not resolution > 0.0:
+        raise ValueError("resolution must be positive, or None for a fixed Gauss-Hermite rule")
     scores = data.scores
     status = _item_status(scores)
     keep = status == ESTIMATED
@@ -365,7 +618,6 @@ def fit_mml(
     failed = (scores[:, keep] == 0.0).astype(float)
     answered = solved.sum(axis=1) + failed.sum(axis=1)
 
-    nodes, log_weights = gauss_hermite(n_quad)
     if start is None:
         share = solved.sum(axis=0) / (solved.sum(axis=0) + failed.sum(axis=0))
         a = np.ones(int(keep.sum()))
@@ -382,21 +634,40 @@ def fit_mml(
         if kind == "1pl":
             a = np.full_like(a, a.mean())
 
-    m_step = _m_step_1pl if kind == "1pl" else _m_step_2pl
-    trace: list[float] = []
-    converged = False
+    grid = gauss_hermite_grid(n_quad)
+    budget = max_iter
     iterations = 0
-    while iterations < max_iter and not converged:
-        iterations += 1
-        posterior, loglik = _posterior(a, d, solved, failed, nodes, log_weights)
-        trace.append(float(loglik.sum()))
-        a_new, d_new = m_step(a, d, solved.T @ posterior, failed.T @ posterior, nodes)
-        moved = max(float(np.abs(a_new - a).max()), float(np.abs(d_new - d).max()))
-        a, d = a_new, d_new
-        converged = moved < tol
+    refinements = 0
+    warming = resolution is not None
+    mode: np.ndarray | None = None
+    ratio = float("nan")
+    while True:
+        limit = min(budget, _WARMUP) if warming else budget
+        a, d, steps, converged, trace = _em(a, d, solved, failed, grid, kind, limit, tol)
+        budget -= steps
+        iterations += steps
+        warming = False
+        if resolution is None:
+            break
+        mode, width = posterior_width(a, d, solved, failed, mode)
+        reach = _extent(a, d, solved, failed, mode, width)
+        ratio = _resolution_ratio(grid, a, mode, width, reach) / resolution
+        if ratio <= 1.0:
+            if converged or budget <= 0:
+                break
+            continue
+        if refinements >= _MAX_REFINEMENTS or budget <= 0:
+            break
+        finer, _ = covering_grid(
+            a, d, solved, failed, resolution=resolution, max_nodes=max_nodes, start=mode
+        )
+        if finer.size >= max_nodes and grid.rule == "uniform" and grid.size >= max_nodes:
+            break
+        grid = finer
+        refinements += 1
     if a.sum() < 0.0:
         a = -a
-    _, loglik = _posterior(a, d, solved, failed, nodes, log_weights)
+    _, loglik = _posterior(a, d, solved, failed, grid.nodes, grid.log_weights)
     trace.append(float(loglik.sum()))
 
     discrimination = np.full(data.n_items, np.nan)
@@ -406,6 +677,7 @@ def fit_mml(
     intercept[status == ALL_CORRECT] = np.inf
     intercept[status == ALL_INCORRECT] = -np.inf
     n_estimated = int(keep.sum())
+    seen = ~np.isnan(scores)
     return IRTFit(
         kind=kind,
         items=data.items,
@@ -420,6 +692,11 @@ def fit_mml(
         iterations=iterations,
         converged=converged,
         trace=tuple(trace),
+        quadrature=grid.rule,
+        n_nodes=grid.size,
+        resolution=ratio,
+        item_tried=seen.sum(axis=0).astype(int),
+        item_solved=np.where(seen, scores, 0.0).sum(axis=0).astype(int),
     )
 
 
@@ -448,38 +725,66 @@ def _aligned_indicators(fit: IRTFit, data: ResponseMatrix) -> tuple[np.ndarray, 
     return solved, failed
 
 
+def score_posterior(
+    fit: IRTFit, data: ResponseMatrix, *, resolution: float = 1.0, max_nodes: int = 2001
+) -> tuple[Grid, np.ndarray, np.ndarray, np.ndarray]:
+    """Posterior of every model in ``data`` over a grid made for those posteriors.
+
+    Returns the grid, the posterior weights (models by nodes, rows summing to 1), each model's
+    marginal log-likelihood, and the number of estimated items each model has results for.
+    """
+    if data.n_models == 0:
+        raise ValueError("there are no models to score")
+    solved, failed = _aligned_indicators(fit, data)
+    keep = fit.estimated
+    a, d = fit.discrimination[keep], fit.intercept[keep]
+    grid, _ = covering_grid(a, d, solved, failed, resolution=resolution, max_nodes=max_nodes)
+    posterior, loglik = _posterior(a, d, solved, failed, grid.nodes, grid.log_weights)
+    return grid, posterior, loglik, (solved.sum(axis=1) + failed.sum(axis=1)).astype(int)
+
+
 def estimate_abilities(
-    fit: IRTFit, data: ResponseMatrix, *, n_quad: int | None = None
+    fit: IRTFit, data: ResponseMatrix, *, resolution: float = 1.0
 ) -> AbilityEstimates:
     """EAP ability and posterior SD of every model in ``data`` under the item parameters of ``fit``.
 
     The posterior of a model is its likelihood on the estimated items it has results for, times
     the ``N(0, 1)`` density. A model without any such result gets the prior: ability 0, SD 1.
     """
-    solved, failed = _aligned_indicators(fit, data)
-    keep = fit.estimated
-    nodes, log_weights = gauss_hermite(n_quad or fit.n_quad)
-    posterior, _ = _posterior(
-        fit.discrimination[keep], fit.intercept[keep], solved, failed, nodes, log_weights
-    )
-    theta = posterior @ nodes
-    variance = posterior @ (nodes * nodes) - theta * theta
+    grid, posterior, _, answered = score_posterior(fit, data, resolution=resolution)
+    theta = posterior @ grid.nodes
+    variance = posterior @ (grid.nodes * grid.nodes) - theta * theta
     return AbilityEstimates(
         models=data.models,
         theta=theta,
         sd=np.sqrt(np.maximum(variance, 0.0)),
-        n_answered=(solved.sum(axis=1) + failed.sum(axis=1)).astype(int),
+        n_answered=answered,
     )
 
 
 def marginal_log_likelihood(
-    fit: IRTFit, data: ResponseMatrix, *, n_quad: int | None = None
+    fit: IRTFit, data: ResponseMatrix, *, resolution: float = 1.0
 ) -> float:
     """Marginal log-likelihood of ``data`` over the estimated items of ``fit``."""
-    solved, failed = _aligned_indicators(fit, data)
-    keep = fit.estimated
-    nodes, log_weights = gauss_hermite(n_quad or fit.n_quad)
-    _, loglik = _posterior(
-        fit.discrimination[keep], fit.intercept[keep], solved, failed, nodes, log_weights
-    )
+    _, _, loglik, _ = score_posterior(fit, data, resolution=resolution)
     return float(loglik.sum())
+
+
+def predict_probabilities(
+    fit: IRTFit, data: ResponseMatrix, *, resolution: float = 1.0
+) -> np.ndarray:
+    """Probability that each model in ``data`` solves each item of ``fit``, given its results.
+
+    For an estimated item this is the posterior predictive probability: the item curve averaged
+    over the model's ability posterior, which is built from whatever cells ``data`` holds. For an
+    item left out of the fit it is the item's smoothed solve rate, the same for every model; for
+    an item without data it is NaN. The result has one row per model and one column per fitted
+    item, in the order of ``fit.items``.
+    """
+    grid, posterior, _, _ = score_posterior(fit, data, resolution=resolution)
+    keep = fit.estimated
+    curves = sigmoid(np.outer(grid.nodes, fit.discrimination[keep]) + fit.intercept[keep][None, :])
+    out = np.tile(fit.smoothed_rate, (data.n_models, 1))
+    out[:, keep] = posterior @ curves
+    out[:, [state == NO_DATA for state in fit.status]] = np.nan
+    return out

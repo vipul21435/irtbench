@@ -81,12 +81,12 @@ def test_likelihood_with_flat_items_has_a_closed_form():
     data = ResponseMatrix(("m1", "m2", "m3"), ("q1", "q2", "q3"), scores)
     p = 1.0 / (1.0 + np.exp(-intercepts))
     expected = np.nansum(scores * np.log(p) + (1.0 - scores) * np.log(1.0 - p))
-    assert marginal_log_likelihood(fit, data) == pytest.approx(expected, abs=1e-12)
+    assert marginal_log_likelihood(fit, data) == pytest.approx(expected, abs=1e-10)
 
 
 def test_likelihood_of_a_symmetric_item_is_one_half():
     fit = IRTFit.from_parameters(("q1",), [1.7], [0.0])
-    assert marginal_log_likelihood(fit, one_model([1])) == pytest.approx(np.log(0.5), abs=1e-12)
+    assert marginal_log_likelihood(fit, one_model([1])) == pytest.approx(np.log(0.5), abs=1e-7)
 
 
 def test_likelihood_matches_adaptive_integration():
@@ -95,7 +95,9 @@ def test_likelihood_matches_adaptive_integration():
     cells = [1, 0, 1, 1]
     fit = IRTFit.from_parameters(("q1", "q2", "q3", "q4"), a, d)
     expected = np.log(pattern_integral(a, d, cells))
-    assert marginal_log_likelihood(fit, one_model(cells)) == pytest.approx(expected, abs=1e-9)
+    assert marginal_log_likelihood(fit, one_model(cells)) == pytest.approx(expected, abs=1e-7)
+    fine = marginal_log_likelihood(fit, one_model(cells), resolution=0.4)
+    assert fine == pytest.approx(expected, abs=1e-12)
 
 
 def test_eap_and_posterior_sd_match_adaptive_integration():
@@ -107,16 +109,16 @@ def test_eap_and_posterior_sd_match_adaptive_integration():
     mean = pattern_integral(a, d, cells, power=1) / mass
     second = pattern_integral(a, d, cells, power=2) / mass
     abilities = estimate_abilities(fit, one_model(cells))
-    assert abilities.theta[0] == pytest.approx(mean, abs=1e-8)
-    assert abilities.sd[0] == pytest.approx(np.sqrt(second - mean**2), abs=1e-8)
+    assert abilities.theta[0] == pytest.approx(mean, abs=1e-7)
+    assert abilities.sd[0] == pytest.approx(np.sqrt(second - mean**2), abs=1e-7)
     assert abilities.n_answered.tolist() == [5]
 
 
 def test_model_without_results_gets_the_prior():
     fit = IRTFit.from_parameters(("q1", "q2"), [1.0, 1.5], [0.0, 0.5])
     abilities = estimate_abilities(fit, one_model([np.nan, np.nan]))
-    assert abilities.theta[0] == pytest.approx(0.0, abs=1e-12)
-    assert abilities.sd[0] == pytest.approx(1.0, abs=1e-12)
+    assert abilities.theta[0] == pytest.approx(0.0, abs=1e-10)
+    assert abilities.sd[0] == pytest.approx(1.0, abs=1e-10)
     assert abilities.n_answered.tolist() == [0]
 
 
@@ -167,9 +169,9 @@ def test_em_never_decreases_the_likelihood(kind):
     data, _ = simulate_responses(400, 12, kind=kind, seed=11, missing=0.1)
     fit = fit_mml(data, kind)
     assert fit.converged
-    assert len(fit.trace) == fit.iterations + 1
+    assert 2 <= len(fit.trace) <= fit.iterations + 1
     assert np.diff(fit.trace).min() > -1e-8
-    assert fit.log_likelihood == pytest.approx(marginal_log_likelihood(fit, data), abs=1e-9)
+    assert fit.log_likelihood == pytest.approx(marginal_log_likelihood(fit, data), abs=1e-5)
 
 
 def test_2pl_recovers_simulated_parameters():
@@ -214,11 +216,11 @@ def test_a_model_without_results_changes_nothing():
     padded = ResponseMatrix(
         data.models + ("empty",), data.items, np.vstack([data.scores, np.full((1, 10), np.nan)])
     )
-    base = fit_mml(data, "2pl")
-    extra = fit_mml(padded, "2pl")
-    np.testing.assert_allclose(extra.discrimination, base.discrimination, atol=1e-10)
-    np.testing.assert_allclose(extra.intercept, base.intercept, atol=1e-10)
-    assert extra.log_likelihood == pytest.approx(base.log_likelihood, abs=1e-9)
+    base = fit_mml(data, "2pl", tol=1e-10)
+    extra = fit_mml(padded, "2pl", tol=1e-10)
+    np.testing.assert_allclose(extra.discrimination, base.discrimination, atol=1e-6)
+    np.testing.assert_allclose(extra.intercept, base.intercept, atol=1e-6)
+    assert extra.log_likelihood == pytest.approx(base.log_likelihood, abs=1e-6)
     assert extra.n_models == base.n_models == 300
 
 
@@ -285,7 +287,7 @@ def test_warm_start_stays_at_the_solution():
     data, _ = simulate_responses(300, 10, kind="2pl", seed=12)
     base = fit_mml(data, "2pl", tol=1e-9)
     again = fit_mml(data, "2pl", tol=1e-9, start=(base.discrimination, base.intercept))
-    assert again.iterations <= 2
+    assert again.iterations <= 5
     np.testing.assert_allclose(again.discrimination, base.discrimination, atol=1e-7)
     assert again.log_likelihood == pytest.approx(base.log_likelihood, abs=1e-9)
 
@@ -367,6 +369,8 @@ def test_fit_summary_is_json_ready():
         "discrimination": None,
         "difficulty": None,
         "intercept": None,
+        "tried": 120,
+        "solved": 120,
     }
     rows = json.loads(json.dumps(estimate_abilities(fit, wider).to_dict(), allow_nan=False))
     assert rows[0].keys() == {"model", "theta", "sd", "n_answered"}

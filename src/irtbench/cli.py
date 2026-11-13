@@ -61,7 +61,7 @@ def render_fit(
         f"- data: {data.n_models} models x {data.n_items} items, "
         f"{data.n_missing} of {cells} cells missing",
         f"- model: {fit.kind} by marginal maximum likelihood "
-        f"(EM, {fit.n_quad} Gauss-Hermite nodes)",
+        f"(EM on a {fit.quadrature} grid of {fit.n_nodes} nodes)",
         f"- log-likelihood: {fit.log_likelihood:.3f} with {fit.n_parameters} parameters; {ending}",
         f"- items left out of the fit: {counts[ALL_CORRECT]} solved by all, "
         f"{counts[ALL_INCORRECT]} solved by none, {counts[NO_DATA]} without data",
@@ -120,9 +120,22 @@ def _cmd_fit(args: argparse.Namespace) -> int:
         item_col=args.item_col,
         score_col=args.score_col,
     )
-    fit = fit_mml(data, args.irt_model, n_quad=args.quad, max_iter=args.max_iter, tol=args.tol)
+    fit = fit_mml(
+        data,
+        args.irt_model,
+        n_quad=args.quad,
+        resolution=args.resolution,
+        max_iter=args.max_iter,
+        tol=args.tol,
+    )
     abilities = estimate_abilities(fit, data)
     sys.stdout.write(render_fit(Path(args.input).name, data, fit, abilities, rows=args.rows))
+    if fit.resolution > 1.0:
+        print(
+            f"irtbench: warning: the quadrature grid is {fit.resolution:.1f} times too coarse "
+            "for the narrowest posterior or the steepest item",
+            file=sys.stderr,
+        )
     if not fit.converged:
         print(
             f"irtbench: warning: EM did not converge in {fit.iterations} iterations; "
@@ -172,7 +185,15 @@ def build_parser() -> argparse.ArgumentParser:
     fit.add_argument("--item-col", default="item", help="long format: item column")
     fit.add_argument("--score-col", default="score", help="long format: 0/1 score column")
     fit.add_argument("--irt-model", choices=KINDS, default="2pl", help="default: 2pl")
-    fit.add_argument("--quad", type=int, default=61, help="Gauss-Hermite nodes (default: 61)")
+    fit.add_argument(
+        "--quad", type=int, default=61, help="nodes of the starting Gauss-Hermite rule"
+    )
+    fit.add_argument(
+        "--resolution",
+        type=float,
+        default=1.0,
+        help="largest node gap in units of the narrowest posterior width (default: 1.0)",
+    )
     fit.add_argument("--max-iter", type=int, default=2000, help="EM iteration limit")
     fit.add_argument("--tol", type=float, default=1e-6, help="EM stops below this parameter change")
     fit.add_argument("--rows", type=int, default=10, help="rows per printed table; 0 prints all")
