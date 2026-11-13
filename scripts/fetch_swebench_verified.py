@@ -17,7 +17,9 @@ A submission is read from ``results/results.json`` when present (the instance id
 ``resolved`` score 1, every other instance scores 0) and otherwise from
 ``per_instance_details.json`` (one ``resolved`` flag per instance; an instance the file does not
 mention is left missing). The item universe is the union of all instance ids that any of these
-files mentions.
+files mentions. A submission whose file marks no instance at all as resolved is taken to be an
+incomplete record and is dropped unless ``--keep-empty`` is given; the dropped names are
+printed and stored in the metadata file.
 
 Requires git 2.27 or newer. Uses only the standard library.
 """
@@ -98,11 +100,18 @@ def read_submissions(root: Path) -> tuple[dict[str, dict[str, int]], dict[str, s
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("data_dir", type=Path, help="directory for the clone and the matrix")
+    parser.add_argument(
+        "--keep-empty", action="store_true", help="keep submissions with no resolved instance"
+    )
     args = parser.parse_args(argv)
     args.data_dir.mkdir(parents=True, exist_ok=True)
     commit = clone(args.data_dir / "experiments")
     scores, source, universe = read_submissions(args.data_dir / "experiments")
     items = sorted(universe)
+    empty = sorted(name for name, row in scores.items() if not any(row.values()))
+    if not args.keep_empty:
+        for name in empty:
+            del scores[name]
     models = sorted(scores)
     output = args.data_dir / "swebench_verified.csv"
     missing = 0
@@ -121,10 +130,15 @@ def main(argv: list[str] | None = None) -> int:
         "n_models": len(models),
         "n_items": len(items),
         "n_missing": missing,
+        "without_any_resolved": empty,
+        "kept_empty": bool(args.keep_empty),
         "sources": {name: source[name] for name in models},
     }
     (args.data_dir / "swebench_verified_meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     print(f"commit {commit}")
+    if empty:
+        verb = "kept" if args.keep_empty else "dropped"
+        print(f"{verb} {len(empty)} submissions with no resolved instance: {', '.join(empty)}")
     print(f"{len(models)} submissions x {len(items)} items, {missing} missing cells -> {output}")
     return 0
 
