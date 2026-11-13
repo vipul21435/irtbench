@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from irtbench.data import ResponseMatrix
 from irtbench.mml import _common_slope, _log_prior, estimate_abilities, fit_mml
 from irtbench.simulate import simulate_responses
 
@@ -28,6 +29,25 @@ def test_the_prior_makes_the_2pl_converge_on_few_models():
     assert fit.log_likelihood > common.log_likelihood
     slopes = fit.discrimination
     assert fit.slope_prior_mean == pytest.approx(float(slopes @ slopes) / float(slopes.sum()))
+
+
+def test_the_prior_does_not_bound_a_common_slope_on_perfectly_separated_results():
+    # model i solves exactly the i easiest of 19 items. All slopes can then grow together,
+    # which a prior on their ratios does not see, so the fit must say it did not converge.
+    solved = (np.arange(20)[:, None] > np.arange(19)[None, :]).astype(float)
+    data = ResponseMatrix([f"m{i}" for i in range(20)], [f"q{j}" for j in range(19)], solved)
+    short = fit_mml(data, "2pl", max_iter=20)
+    longer = fit_mml(data, "2pl", max_iter=60)
+    for fit in (short, longer):
+        assert not fit.converged
+        assert fit.slope_prior_sd == 0.5
+        assert fit.discrimination.min() > 10
+        assert fit.discrimination.max() / fit.discrimination.min() < 1.2
+    assert longer.slope_prior_mean > short.slope_prior_mean + 2
+    assert longer.log_likelihood > short.log_likelihood
+    rasch = fit_mml(data, "1pl", max_iter=20)
+    assert not rasch.converged
+    assert rasch.discrimination[0] > 10
 
 
 def test_a_tight_prior_gives_the_1pl_and_a_wide_one_the_maximum_likelihood_fit():

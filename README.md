@@ -194,6 +194,34 @@ item parameters, a Bayes modal estimate in the sense of Mislevy (1986,
 estimate, and the choice of `s` matters (see the results below). With the default, the example
 above converges in 20 iterations with slopes between 0.45 and 1.63.
 
+The prior does not bound the common slope `c` itself. When the results are perfectly
+separated, that is, when the models can be ordered so that each solves exactly the items below
+its level, all slopes can grow together at no cost under the prior, the likelihood keeps
+rising and EM does not converge. The 1PL has the same problem. On a triangular matrix of 20
+models by 19 items, in which model `i` solves the `i` easiest items:
+
+```python
+import numpy as np
+from irtbench import ResponseMatrix, fit_mml
+
+solved = (np.arange(20)[:, None] > np.arange(19)[None, :]).astype(float)
+data = ResponseMatrix([f"m{i}" for i in range(20)], [f"q{j}" for j in range(19)], solved)
+for kind in ("1pl", "2pl"):
+    for limit in (100, 400):
+        fit = fit_mml(data, kind, max_iter=limit)
+        print(kind, limit, fit.converged, round(float(fit.discrimination.max())))
+```
+
+```
+1pl 100 False 127
+1pl 400 False 129
+2pl 100 False 40
+2pl 400 False 57
+```
+
+The fit reports this (`converged` is false, and the commands print a warning) and does not cap
+the slope; the numbers it returns for such a matrix are where it stopped, not estimates.
+
 **Abilities.** Each model gets the mean of its posterior (EAP) and the posterior standard
 deviation. Missing cells are skipped, which is only right if the reason a cell is missing does
 not depend on what its score would have been.
@@ -366,6 +394,9 @@ plain mean on 100 (3.0 against 3.2).
 - The 2PL estimates depend on the slope prior. Its form and its default of 0.5 are choices,
   and the number of items flagged as negative moved from one to seven across priors of 0.25 to
   1.0 on the real data. Without the prior the 2PL does not converge on small matrices.
+- The prior limits how far the slopes differ from each other, not their common size. On
+  perfectly separated results every slope grows without bound and neither the 2PL nor the 1PL
+  converges; the fit reports that and nothing more is done about it.
 - A flag is a reason to read an item, not evidence that it is broken. No flagged instance was
   inspected.
 - The quadrature criterion is a rule of thumb for peaked, smooth posteriors. In the tests it
