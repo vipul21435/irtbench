@@ -60,6 +60,11 @@ def test_gauss_hermite_rejects_one_node():
         gauss_hermite(1)
 
 
+def test_gauss_hermite_rejects_a_rule_whose_weights_underflow():
+    with pytest.raises(ValueError, match="use fewer nodes"):
+        gauss_hermite(600)
+
+
 # --- likelihood and abilities at known parameters -----------------------------------------
 
 
@@ -274,6 +279,61 @@ def test_higher_ability_means_a_higher_score():
     assert fit.discrimination.sum() > 0
     theta = estimate_abilities(fit, data).theta
     assert np.corrcoef(theta, data.model_means())[0, 1] > 0.9
+
+
+def test_warm_start_stays_at_the_solution():
+    data, _ = simulate_responses(300, 10, kind="2pl", seed=12)
+    base = fit_mml(data, "2pl", tol=1e-9)
+    again = fit_mml(data, "2pl", tol=1e-9, start=(base.discrimination, base.intercept))
+    assert again.iterations <= 2
+    np.testing.assert_allclose(again.discrimination, base.discrimination, atol=1e-7)
+    assert again.log_likelihood == pytest.approx(base.log_likelihood, abs=1e-9)
+
+
+def test_mirrored_start_is_flipped_back_to_positive_slopes():
+    # (a, theta) and (-a, -theta) have the same likelihood; the fit reports the positive one
+    data, _ = simulate_responses(300, 10, kind="2pl", seed=12)
+    base = fit_mml(data, "2pl", tol=1e-9)
+    mirrored = fit_mml(data, "2pl", tol=1e-9, start=(-base.discrimination, base.intercept))
+    assert mirrored.discrimination.sum() > 0
+    np.testing.assert_allclose(mirrored.discrimination, base.discrimination, atol=1e-6)
+    np.testing.assert_allclose(mirrored.intercept, base.intercept, atol=1e-6)
+
+
+def test_start_for_the_1pl_uses_the_mean_slope():
+    data, _ = simulate_responses(300, 10, kind="1pl", seed=13)
+    base = fit_mml(data, "1pl", tol=1e-9)
+    uneven = np.linspace(0.5, 1.5, 10)
+    fit = fit_mml(data, "1pl", tol=1e-9, start=(uneven, base.intercept))
+    assert np.ptp(fit.discrimination) == 0.0
+    np.testing.assert_allclose(fit.discrimination, base.discrimination, atol=1e-6)
+
+
+def test_start_is_validated():
+    data, _ = simulate_responses(100, 6, kind="2pl", seed=14)
+    with pytest.raises(ValueError, match="one discrimination and one intercept per item"):
+        fit_mml(data, "2pl", start=(np.ones(5), np.zeros(6)))
+    with pytest.raises(ValueError, match="finite"):
+        fit_mml(data, "2pl", start=(np.full(6, np.nan), np.zeros(6)))
+
+
+def test_simulation_is_seeded_and_validated():
+    first, truth = simulate_responses(30, 5, seed=3, missing=0.2)
+    second, _ = simulate_responses(30, 5, seed=3, missing=0.2)
+    np.testing.assert_array_equal(first.scores, second.scores)
+    assert first.models[0] == "model-01"
+    assert first.items[-1] == "item-5"
+    assert truth["ability"].shape == (30,)
+    assert 0 < first.n_missing < 150
+    given, kept = simulate_responses(4, 2, difficulty=[0.5, -0.5], discrimination=[1.0, 2.0])
+    assert kept["difficulty"].tolist() == [0.5, -0.5]
+    assert kept["discrimination"].tolist() == [1.0, 2.0]
+    with pytest.raises(ValueError, match="unknown model"):
+        simulate_responses(4, 2, kind="3pl")
+    with pytest.raises(ValueError, match=r"missing must be in \[0, 1\)"):
+        simulate_responses(4, 2, missing=1.0)
+    with pytest.raises(ValueError, match="difficulty needs 2 values"):
+        simulate_responses(4, 2, difficulty=[0.0])
 
 
 def test_fit_rejects_unusable_input():

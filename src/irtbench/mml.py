@@ -337,6 +337,7 @@ def fit_mml(
     n_quad: int = 61,
     max_iter: int = 2000,
     tol: float = 1e-6,
+    start: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> IRTFit:
     """Fit a 1PL or 2PL model by marginal maximum likelihood.
 
@@ -344,6 +345,11 @@ def fit_mml(
     more than ``tol`` in an iteration, or after ``max_iter`` iterations (``converged`` is then
     False). The fit is oriented so that the discriminations sum to a positive number, which
     makes a higher ability mean a stronger model.
+
+    ``start`` warm-starts EM from ``(discrimination, intercept)`` arrays with one value per item
+    of ``data``, for example those of an earlier fit; entries of items that are not estimated
+    are ignored. Without it every slope starts at 1 and every intercept at a value matched to
+    the share of models that solved the item.
     """
     if kind not in KINDS:
         raise ValueError(f"unknown model {kind!r}; use one of {', '.join(KINDS)}")
@@ -360,10 +366,21 @@ def fit_mml(
     answered = solved.sum(axis=1) + failed.sum(axis=1)
 
     nodes, log_weights = gauss_hermite(n_quad)
-    share = solved.sum(axis=0) / (solved.sum(axis=0) + failed.sum(axis=0))
-    a = np.ones(int(keep.sum()))
-    # logit of the marginal share, widened for the spread of a standard normal ability
-    d = np.log(share / (1.0 - share)) * np.sqrt(1.0 + 0.346)
+    if start is None:
+        share = solved.sum(axis=0) / (solved.sum(axis=0) + failed.sum(axis=0))
+        a = np.ones(int(keep.sum()))
+        # logit of the marginal share, widened for the spread of a standard normal ability
+        d = np.log(share / (1.0 - share)) * np.sqrt(1.0 + 0.346)
+    else:
+        a_start = np.asarray(start[0], dtype=float)
+        d_start = np.asarray(start[1], dtype=float)
+        if a_start.shape != (data.n_items,) or d_start.shape != (data.n_items,):
+            raise ValueError("start needs one discrimination and one intercept per item")
+        a, d = a_start[keep].copy(), d_start[keep].copy()
+        if not (np.isfinite(a).all() and np.isfinite(d).all()):
+            raise ValueError("start must be finite for every item that is estimated")
+        if kind == "1pl":
+            a = np.full_like(a, a.mean())
 
     m_step = _m_step_1pl if kind == "1pl" else _m_step_2pl
     trace: list[float] = []

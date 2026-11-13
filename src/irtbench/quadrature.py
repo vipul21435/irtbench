@@ -16,7 +16,8 @@ def gauss_hermite(n: int) -> tuple[np.ndarray, np.ndarray]:
     """
     if n < 2:
         raise ValueError("a quadrature rule needs at least 2 nodes")
-    nodes, weights = np.polynomial.hermite_e.hermegauss(n)
+    with np.errstate(all="ignore"):
+        nodes, weights = np.polynomial.hermite_e.hermegauss(n)
     if not (np.all(np.isfinite(weights)) and np.all(weights > 0.0)):
         raise ValueError(f"the {n}-point rule has weights too small to represent; use fewer nodes")
     return nodes, np.log(weights) - _LOG_SQRT_2PI
